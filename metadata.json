@@ -1,0 +1,6 @@
+{
+  "name": "DataDex",
+  "description": "Real-time ML screen reader and tactical Pokédex overlay that identifies Pokémon on screen or camera and displays stats, typing, and weaknesses.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

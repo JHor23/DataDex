@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">DataDex</string>
+    <string name="tagline_hud">SMART SCREEN POKÉDEX</string>
+    <string name="nav_scanner">Scanner</string>
+    <string name="nav_pokedex">DataDex</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+    <string name="nav_about_me">About Me</string>
+    <string name="overlay_channel_name">DataDex Screen Scanner</string>
+    <string name="overlay_channel_desc">Active screen reader and floating Pokédex overlay</string>
+    <string name="overlay_notif_title">DataDex Overlay Active</string>
+    <string name="overlay_notif_body">Scanning your screen in real time for Pokémon</string>
+    <string name="action_start_overlay">Launch Screen Overlay</string>
+    <string name="action_stop_overlay">Stop Overlay</string>
+    <string name="action_grant_overlay">Enable Overlay Permission</string>
+    <string name="action_camera_scan">Live Camera</string>
+    <string name="action_photo_scan">Scan Screenshot</string>
+    <string name="camera_permission_rationale">Camera access lets DataDex scan Pokémon cards, screens, and collectibles in real time.</string>
+    <string name="empty_history_title">No Scans Recorded Yet</string>
+    <string name="empty_history_subtitle">Launch the Screen Overlay, Live Camera, or Screenshot Scanner to identify Pokémon in real time.</string>
+</resources>
