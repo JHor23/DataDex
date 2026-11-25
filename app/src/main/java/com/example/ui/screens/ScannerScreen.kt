@@ -87,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.OverlayHudState
+import com.example.model.PokemonEntry
 import com.example.ui.components.ScanMatchSummaryBanner
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.DexOutline
@@ -155,6 +156,7 @@ fun ScannerScreen(
     onLaunchCameraScan: () -> Unit,
     onLaunchPhotoPicker: () -> Unit,
     onTestSampleCard: (name: String, level: Int, hpText: String) -> Unit,
+    onComparePokemon: (PokemonEntry) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -949,7 +951,8 @@ fun ScannerScreen(
                     ScanMatchSummaryBanner(
                         match = match,
                         showAbilitiesAndNatures = overlayState.showAbilitiesAndNatures,
-                        onToggleAbilities = onToggleOverlayAbilities
+                        onToggleAbilities = onToggleOverlayAbilities,
+                        onCompare = { onComparePokemon(match.pokemon) }
                     )
                 }
             }

@@ -23,6 +23,7 @@ import com.example.model.PokemonType
 import com.example.model.RecognitionMethod
 import com.example.model.ScanHistoryItem
 import com.example.model.ScanMatch
+import com.example.model.TypeEffectivenessChart
 import com.example.audio.ScouterSoundEngine
 import com.example.voice.DataDexVoiceSpeaker
 import com.example.voice.VoiceOption
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 data class ScannerUiState(
     val isAnalyzingImage: Boolean = false,
@@ -51,6 +53,22 @@ data class PokedexUiState(
     val entries: List<PokemonEntry> = emptyList(),
     val selectedDetail: PokemonEntry? = null,
     val isLoadingDetail: Boolean = false
+)
+
+data class CompareSuggestion(
+    val pokemon: PokemonEntry,
+    val reason: String
+)
+
+data class CompareUiState(
+    val isVisible: Boolean = false,
+    val basePokemon: PokemonEntry? = null,
+    val challengerPokemon: PokemonEntry? = null,
+    val searchQuery: String = "",
+    val searchResults: List<PokemonEntry> = emptyList(),
+    val recentSuggestions: List<PokemonEntry> = emptyList(),
+    val similarSuggestions: List<CompareSuggestion> = emptyList(),
+    val isLoadingPokemon: Boolean = false
 )
 
 class DataDexViewModel(application: Application) : AndroidViewModel(application) {
@@ -84,6 +102,9 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
     private val _selectedDetail = MutableStateFlow<PokemonEntry?>(null)
     private val _isLoadingDetail = MutableStateFlow(false)
     private val _catalogRefreshTick = MutableStateFlow(0)
+
+    private val _compareUi = MutableStateFlow(CompareUiState())
+    val compareUi: StateFlow<CompareUiState> = _compareUi.asStateFlow()
 
     val pokedexUi: StateFlow<PokedexUiState> = combine(
         _searchQuery,
@@ -268,6 +289,173 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
 
     fun dismissPokemonDetail() {
         _selectedDetail.value = null
+    }
+
+    fun openCompare(base: PokemonEntry) {
+        val recents = buildRecentSuggestions(excludeId = base.id)
+        val excludeIds = buildSet {
+            add(base.id)
+            recents.forEach { add(it.id) }
+        }
+        val similars = buildSimilarSuggestions(base = base, excludeIds = excludeIds)
+        _compareUi.value = CompareUiState(
+            isVisible = true,
+            basePokemon = base,
+            challengerPokemon = null,
+            searchQuery = "",
+            searchResults = emptyList(),
+            recentSuggestions = recents,
+            similarSuggestions = similars,
+            isLoadingPokemon = false
+        )
+        if (base.source == DataSource.BUNDLED_DEX &&
+            base.category.startsWith("Tap to load") &&
+            preferences.value.enablePokeApiLiveFetch
+        ) {
+            viewModelScope.launch {
+                val enriched = withContext(Dispatchers.IO) {
+                    repository.getPokemonById(base.id, allowNetwork = true)
+                }
+                if (enriched != null) {
+                    _compareUi.update { current ->
+                        if (current.basePokemon?.id == enriched.id) {
+                            current.copy(
+                                basePokemon = enriched,
+                                similarSuggestions = buildSimilarSuggestions(
+                                    base = enriched,
+                                    excludeIds = excludeIds
+                                )
+                            )
+                        } else current
+                    }
+                }
+            }
+        }
+    }
+
+    fun updateCompareQuery(query: String) {
+        val baseId = _compareUi.value.basePokemon?.id
+        val results = if (query.isBlank()) {
+            emptyList()
+        } else {
+            repository.searchLocalCatalog(query)
+                .filter { it.id != baseId }
+                .take(30)
+        }
+        _compareUi.update { it.copy(searchQuery = query, searchResults = results) }
+    }
+
+    fun selectCompareChallenger(entry: PokemonEntry) {
+        _compareUi.update {
+            it.copy(
+                isVisible = true,
+                challengerPokemon = entry,
+                isLoadingPokemon = entry.source == DataSource.BUNDLED_DEX &&
+                    entry.category.startsWith("Tap to load") &&
+                    preferences.value.enablePokeApiLiveFetch
+            )
+        }
+        if (entry.source == DataSource.BUNDLED_DEX &&
+            entry.category.startsWith("Tap to load") &&
+            preferences.value.enablePokeApiLiveFetch
+        ) {
+            viewModelScope.launch {
+                val enriched = withContext(Dispatchers.IO) {
+                    repository.getPokemonById(entry.id, allowNetwork = true)
+                }
+                _compareUi.update { current ->
+                    if (current.challengerPokemon?.id == entry.id) {
+                        current.copy(
+                            challengerPokemon = enriched ?: entry,
+                            isLoadingPokemon = false
+                        )
+                    } else current
+                }
+                if (enriched != null) {
+                    _catalogRefreshTick.update { it + 1 }
+                }
+            }
+        }
+    }
+
+    fun clearCompareChallenger() {
+        _compareUi.update { it.copy(challengerPokemon = null, isLoadingPokemon = false) }
+    }
+
+    fun swapCompareSides() {
+        _compareUi.update { state ->
+            val a = state.basePokemon
+            val b = state.challengerPokemon
+            if (a != null && b != null) {
+                val recents = buildRecentSuggestions(excludeId = b.id)
+                val excludeIds = buildSet {
+                    add(b.id)
+                    recents.forEach { add(it.id) }
+                }
+                state.copy(
+                    basePokemon = b,
+                    challengerPokemon = a,
+                    recentSuggestions = recents,
+                    similarSuggestions = buildSimilarSuggestions(b, excludeIds)
+                )
+            } else state
+        }
+    }
+
+    fun closeCompare() {
+        _compareUi.update { it.copy(isVisible = false, isLoadingPokemon = false) }
+    }
+
+    private fun buildRecentSuggestions(excludeId: Int): List<PokemonEntry> {
+        val seen = HashSet<Int>()
+        seen.add(excludeId)
+        val out = ArrayList<PokemonEntry>(6)
+        for (item in scanHistory.value) {
+            if (!seen.add(item.pokemonId)) continue
+            val cached = repository.getAllCachedEntries().firstOrNull { it.id == item.pokemonId }
+                ?: repository.searchLocalCatalog("#${item.pokemonId}").firstOrNull { it.id == item.pokemonId }
+            if (cached != null) {
+                out.add(cached)
+                if (out.size >= 6) break
+            }
+        }
+        return out
+    }
+
+    private fun buildSimilarSuggestions(
+        base: PokemonEntry,
+        excludeIds: Set<Int>
+    ): List<CompareSuggestion> {
+        val baseBst = base.baseStats.total
+        val candidates = repository.getAllCachedEntries()
+            .asSequence()
+            .filter { it.id !in excludeIds && !it.category.startsWith("Tap to load") }
+            .map { candidate ->
+                val sharedTypes = candidate.types.count { it in base.types }
+                val candMaxOffense = candidate.types.maxOfOrNull {
+                    TypeEffectivenessChart.multiplierAgainst(it, base.types)
+                } ?: 1f
+                val baseMaxOffense = base.types.maxOfOrNull {
+                    TypeEffectivenessChart.multiplierAgainst(it, candidate.types)
+                } ?: 1f
+                val bstDiff = abs(candidate.baseStats.total - baseBst)
+                val score = (sharedTypes * 40) +
+                    (if (candMaxOffense >= 2f || baseMaxOffense >= 2f) 24 else 0) +
+                    (25 - (bstDiff / 10)).coerceAtLeast(0)
+
+                val reason = when {
+                    sharedTypes > 0 -> "Same Type"
+                    candMaxOffense >= 2f -> "Type Counter"
+                    baseMaxOffense >= 2f -> "Type Target"
+                    else -> "Similar BST"
+                }
+                score to CompareSuggestion(candidate, reason)
+            }
+            .sortedByDescending { it.first }
+            .take(8)
+            .map { it.second }
+            .toList()
+        return candidates
     }
 
     fun pinPokemonToOverlay(entry: PokemonEntry) {

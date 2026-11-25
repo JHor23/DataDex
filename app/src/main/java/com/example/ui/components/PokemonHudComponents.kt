@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -163,7 +164,7 @@ fun AbilitiesTogglePill(
         )
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
@@ -180,6 +181,46 @@ fun AbilitiesTogglePill(
                     fontWeight = FontWeight.Bold
                 ),
                 color = if (active) VoltGold else TextPrimary
+            )
+        }
+    }
+}
+
+@Composable
+fun CompareActionPill(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .testTag("overlay_compare_button"),
+        shape = RoundedCornerShape(10.dp),
+        color = CyberCyan.copy(alpha = 0.14f),
+        border = BorderStroke(
+            width = 1.dp,
+            color = CyberCyan.copy(alpha = 0.6f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.CompareArrows,
+                contentDescription = "Compare Pokémon",
+                tint = CyberCyan,
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = "COMPARE",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = TextPrimary
             )
         }
     }
@@ -460,8 +501,9 @@ fun PokemonTacticalBreakdown(
                     overflow = TextOverflow.Ellipsis
                 )
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.padding(top = 3.dp)
                 ) {
                     pokemon.types.forEach { type ->
@@ -565,7 +607,8 @@ fun ScanMatchSummaryBanner(
     match: ScanMatch,
     modifier: Modifier = Modifier,
     showAbilitiesAndNatures: Boolean = false,
-    onToggleAbilities: (() -> Unit)? = null
+    onToggleAbilities: (() -> Unit)? = null,
+    onCompare: (() -> Unit)? = null
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -582,12 +625,22 @@ fun ScanMatchSummaryBanner(
             confidence = match.confidence,
             compact = true,
             showAbilitiesAndNatures = showAbilitiesAndNatures,
-            headerTrailingContent = if (onToggleAbilities != null) {
+            headerTrailingContent = if (onToggleAbilities != null || onCompare != null) {
                 {
-                    AbilitiesTogglePill(
-                        active = showAbilitiesAndNatures,
-                        onClick = onToggleAbilities
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (onCompare != null) {
+                            CompareActionPill(onClick = onCompare)
+                        }
+                        if (onToggleAbilities != null) {
+                            AbilitiesTogglePill(
+                                active = showAbilitiesAndNatures,
+                                onClick = onToggleAbilities
+                            )
+                        }
+                    }
                 }
             } else null,
             modifier = Modifier.padding(12.dp)

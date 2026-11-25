@@ -18,4 +18,10 @@
     <string name="camera_permission_rationale">Camera access lets DataDex scan Pokémon cards, screens, and collectibles in real time.</string>
     <string name="empty_history_title">No Scans Recorded Yet</string>
     <string name="empty_history_subtitle">Launch the Screen Overlay, Live Camera, or Screenshot Scanner to identify Pokémon in real time.</string>
+    <string name="about_creator_avatar_desc">JHor profile photo</string>
+    <string name="about_links_title">Links &amp; Support</string>
+    <string name="about_link_kofi">Support on Ko-fi</string>
+    <string name="about_link_source">View Source</string>
+    <string name="about_link_projects">Check Out My Projects</string>
+    <string name="about_version_format">DataDex v%1$s (Build %2$d)</string>
 </resources>

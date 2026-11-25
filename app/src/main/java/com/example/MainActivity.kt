@@ -98,6 +98,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.overlay.ScreenOverlayService
+import com.example.ui.components.CompareActionPill
+import com.example.ui.components.PokemonCompareModal
 import com.example.ui.components.PokemonTacticalBreakdown
 import com.example.ui.screens.AboutMeScreen
 import com.example.ui.screens.CameraScanScreen
@@ -184,6 +186,7 @@ fun DataDexRootApp(
     val scanHistory by viewModel.scanHistory.collectAsStateWithLifecycle()
     val availableVoices by viewModel.availableVoices.collectAsStateWithLifecycle()
     val isVoiceReady by viewModel.isVoiceReady.collectAsStateWithLifecycle()
+    val compareUi by viewModel.compareUi.collectAsStateWithLifecycle()
 
     var hasOverlayPermission by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
@@ -323,9 +326,10 @@ fun DataDexRootApp(
                             color = if (isOnScanner) CyberCyan else TextPrimary
                         )
                         Text(
-                            text = "Overlay, Camera & Photo",
+                            text = "Overlay, Camera, & Photo",
                             style = MaterialTheme.typography.labelSmall,
-                            color = TextMuted
+                            color = TextMuted,
+                            maxLines = 1
                         )
                     }
                 },
@@ -414,9 +418,10 @@ fun DataDexRootApp(
                             color = if (isOnSettings) CyberCyan else TextPrimary
                         )
                         Text(
-                            text = "Audio, voice & scanner options",
+                            text = "Audio, voice, & scanner",
                             style = MaterialTheme.typography.labelSmall,
-                            color = TextMuted
+                            color = TextMuted,
+                            maxLines = 1
                         )
                     }
                 },
@@ -742,7 +747,8 @@ fun DataDexRootApp(
                                 },
                                 onTestSampleCard = { name, level, hpText ->
                                     viewModel.testMlScreenReadOnSample(name, level, hpText)
-                                }
+                                },
+                                onComparePokemon = viewModel::openCompare
                             )
                         }
 
@@ -840,7 +846,15 @@ fun DataDexRootApp(
                         badgeLabel = detail.category,
                         confidence = null,
                         compact = false,
-                        showAbilitiesAndNatures = true
+                        showAbilitiesAndNatures = true,
+                        headerTrailingContent = {
+                            CompareActionPill(
+                                onClick = {
+                                    viewModel.dismissPokemonDetail()
+                                    viewModel.openCompare(detail)
+                                }
+                            )
+                        }
                     )
 
                     if (detail.abilities.isNotEmpty()) {
@@ -882,6 +896,17 @@ fun DataDexRootApp(
                     Spacer(Modifier.height(16.dp))
                 }
             }
+        }
+
+        if (compareUi.isVisible && compareUi.basePokemon != null) {
+            PokemonCompareModal(
+                state = compareUi,
+                onQueryChange = viewModel::updateCompareQuery,
+                onSelectChallenger = viewModel::selectCompareChallenger,
+                onClearChallenger = viewModel::clearCompareChallenger,
+                onSwapSides = viewModel::swapCompareSides,
+                onDismiss = viewModel::closeCompare
+            )
         }
     }
 }
