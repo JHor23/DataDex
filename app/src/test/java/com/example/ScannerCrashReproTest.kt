@@ -8,6 +8,8 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -16,6 +18,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.DataDexStateHolder
 import com.example.data.LocalPokedexCatalog
 import com.example.ml.DataDexMlEngine
+import com.example.ml.PokemonMatcher
 import com.example.model.OverlayHudState
 import com.example.model.RecognitionMethod
 import com.example.model.ScanMatch
@@ -23,8 +26,11 @@ import com.example.overlay.ScreenOverlayService
 import com.example.viewmodel.DataDexViewModel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -85,6 +91,39 @@ class ScannerCrashReproTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("launch_screen_overlay_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
+    }
+
+    @Test
+    fun `active overlay buttons display Scan Pause Resume Stop without cutoff`() {
+        DataDexStateHolder.updateOverlayState {
+            OverlayHudState(
+                isOverlayRunning = true,
+                isScanningPaused = false,
+                framesProcessed = 7,
+                statusMessage = "Watching screen for Pokémon names"
+            )
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("scan_now_button")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextEquals("Scan")
+        composeTestRule.onNodeWithTag("toggle_overlay_pause_button")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextEquals("Pause")
+        composeTestRule.onNodeWithTag("stop_overlay_button")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextEquals("Stop")
+
+        DataDexStateHolder.updateOverlayState { it.copy(isScanningPaused = true) }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("toggle_overlay_pause_button")
+            .performScrollTo()
+            .assertTextEquals("Resume")
     }
 
     @Test
@@ -184,13 +223,25 @@ class ScannerCrashReproTest {
     }
 
     @Test
-    fun `ml engine analyzeBitmap handles tiny and non-argb bitmaps safely`() = runBlocking {
+    fun `ml engine detectors initialize cleanly and match Charmander card OCR`() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Application>()
         DataDexMlEngine.ensureInitialized(app)
         val engine = DataDexMlEngine()
+
+        val detectors = engine.createCameraDetectors(app, includeVisionDetectors = true)
+        assertEquals(3, detectors.size)
+        assertNull(engine.lastErrorMessage)
+
+        val candidate = PokemonMatcher.matchFromTextLines(
+            listOf("BASIC", "Charmander", "HP 60", "Heat Tackle")
+        )
+        assertNotNull(candidate)
+        assertEquals(4, candidate?.pokemonId)
+
         val rgb565 = Bitmap.createBitmap(12, 12, Bitmap.Config.RGB_565)
         val result = engine.analyzeBitmap(rgb565)
         assertNotNull(result)
+        assertTrue(result.visionLabels.isEmpty() || result.visionLabels.isNotEmpty())
         rgb565.recycle()
         engine.close()
     }

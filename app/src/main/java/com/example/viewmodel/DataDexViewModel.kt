@@ -6,8 +6,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Shader
+import android.media.ExifInterface
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -161,12 +163,17 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
                         )
                     }
                 } else {
+                    val mlErr = mlEngine.lastErrorMessage
                     _scannerUi.update {
                         it.copy(
                             isAnalyzingImage = false,
                             lastRawOcrText = analysis.rawTextPreview,
                             lastVisionTags = analysis.visionLabels,
-                            statusBanner = "No Pokémon detected. Text seen: ${analysis.rawTextPreview.ifBlank { "none" }}"
+                            statusBanner = if (mlErr != null && analysis.rawTextPreview.isBlank()) {
+                                "ML scanner error: $mlErr"
+                            } else {
+                                "No Pokémon detected. Text seen: ${analysis.rawTextPreview.ifBlank { "none" }}"
+                            }
                         )
                     }
                 }
@@ -595,16 +602,63 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
             if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
                 return null
             }
+            val orientation = runCatching {
+                resolver.openInputStream(uri)?.use { stream ->
+                    ExifInterface(stream).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                }
+            }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+
             val maxDim = maxOf(boundsOpts.outWidth, boundsOpts.outHeight).coerceAtLeast(1)
             var sampleSize = 1
-            while (maxDim / sampleSize > 1080) {
+            while (maxDim / sampleSize > 1440) {
                 sampleSize *= 2
             }
             val decodeOpts = BitmapFactory.Options().apply {
                 inSampleSize = sampleSize
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
-            resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, decodeOpts) }
+            val decoded = resolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, decodeOpts)
+            } ?: return null
+
+            val matrix = Matrix()
+            when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+                ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+                ExifInterface.ORIENTATION_TRANSPOSE -> {
+                    matrix.postRotate(90f)
+                    matrix.postScale(-1f, 1f)
+                }
+                ExifInterface.ORIENTATION_TRANSVERSE -> {
+                    matrix.postRotate(270f)
+                    matrix.postScale(-1f, 1f)
+                }
+            }
+            if (matrix.isIdentity) {
+                decoded
+            } else {
+                runCatching {
+                    val rotated = Bitmap.createBitmap(
+                        decoded,
+                        0,
+                        0,
+                        decoded.width,
+                        decoded.height,
+                        matrix,
+                        true
+                    )
+                    if (rotated !== decoded && !decoded.isRecycled) {
+                        decoded.recycle()
+                    }
+                    rotated
+                }.getOrDefault(decoded)
+            }
         } catch (_: Throwable) {
             null
         }

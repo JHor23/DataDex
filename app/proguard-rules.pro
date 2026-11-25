@@ -42,3 +42,19 @@
 -keepclasseswithmembers class com.example.** { kotlinx.serialization.KSerializer serializer(...); }
 -keep @kotlinx.serialization.Serializable class com.example.** { *; }
 
+# ML Kit & Firebase Component Discovery (R8 full mode strips <init>() without explicit members)
+-keep class * implements com.google.firebase.components.ComponentRegistrar {
+    public <init>();
+    public java.util.List getComponents();
+}
+-keepnames class * implements com.google.firebase.components.ComponentRegistrar
+-keep class com.google.mlkit.common.internal.MlKitComponentDiscoveryService
+-keep class com.google.mlkit.common.internal.MlKitInitProvider { *; }
+-keep class com.google.mlkit.common.sdkinternal.MlKitContext { *; }
+-keep class com.google.android.gms.dynamite.descriptors.** { *; }
+-keep class com.google.mlkit.vision.text.bundled.** { *; }
+-keep class com.google.mlkit.vision.vkp.** { *; }
+-keepclasseswithmembers class * {
+    native <methods>;
+}
+

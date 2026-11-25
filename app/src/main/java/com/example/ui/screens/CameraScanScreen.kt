@@ -228,7 +228,8 @@ fun CameraScanScreen(
                             }
                             cameraController.setImageAnalysisAnalyzer(mainExecutor, analyzer)
                         } else {
-                            cameraErrorMessage = "ML scanner initializing; camera preview only."
+                            cameraErrorMessage = mlEngine.lastErrorMessage?.let { "ML scanner error: $it" }
+                                ?: "ML scanner unavailable; camera preview only."
                         }
                         cameraController.bindToLifecycle(lifecycleOwner)
                         cameraController.initializationFuture.addListener(

@@ -79,23 +79,44 @@ class DataDexMlEngine(
                 .build()
         ).also { _objectDetector = it }
 
+    @Volatile
+    var lastErrorMessage: String? = null
+        private set
+
     fun ensureInitialized(context: Context) {
         Companion.ensureInitialized(context)
     }
 
     fun getSafeTextRecognizer(context: Context): TextRecognizer? {
         ensureInitialized(context)
-        return runCatching { textRecognizer }.getOrNull()
+        return runCatching { textRecognizer }
+            .onSuccess { lastErrorMessage = null }
+            .onFailure { error ->
+                lastErrorMessage = error.localizedMessage ?: error.javaClass.simpleName
+            }
+            .getOrNull()
     }
 
     fun getSafeImageLabeler(context: Context): ImageLabeler? {
         ensureInitialized(context)
-        return runCatching { imageLabeler }.getOrNull()
+        return runCatching { imageLabeler }
+            .onFailure { error ->
+                if (lastErrorMessage == null) {
+                    lastErrorMessage = error.localizedMessage ?: error.javaClass.simpleName
+                }
+            }
+            .getOrNull()
     }
 
     fun getSafeObjectDetector(context: Context): ObjectDetector? {
         ensureInitialized(context)
-        return runCatching { objectDetector }.getOrNull()
+        return runCatching { objectDetector }
+            .onFailure { error ->
+                if (lastErrorMessage == null) {
+                    lastErrorMessage = error.localizedMessage ?: error.javaClass.simpleName
+                }
+            }
+            .getOrNull()
     }
 
     fun createCameraDetectors(
@@ -131,11 +152,16 @@ class DataDexMlEngine(
             val height = normalizedBitmap.height.coerceAtLeast(1).toFloat()
 
             val visionText = runCatching { textRecognizer.process(image).awaitResult() }
-                .onFailure { if (it is CancellationException) throw it }
+                .onSuccess { lastErrorMessage = null }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    lastErrorMessage = it.localizedMessage ?: it.javaClass.simpleName
+                }
                 .getOrNull()
             val textLines = visionText?.textBlocks
                 ?.flatMap { block -> block.lines.map { it.text } }
-                .orEmpty()
+                ?.takeIf { it.isNotEmpty() }
+                ?: visionText?.text?.lines()?.filter { it.isNotBlank() }.orEmpty()
             val ocrCandidates = PokemonMatcher.matchAllFromTextLines(textLines)
 
             val imageLabels: List<ImageLabel>

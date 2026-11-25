@@ -588,26 +588,41 @@ fun ScannerScreen(
                                     .weight(1f)
                                     .height(48.dp)
                                     .testTag("scan_now_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 border = BorderStroke(1.dp, CyberCyan.copy(alpha = 0.6f))
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, tint = CyberCyan, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Refresh, contentDescription = null, tint = CyberCyan, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Scan Now", color = CyberCyan, maxLines = 1)
+                                Text(
+                                    text = "Scan",
+                                    color = CyberCyan,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             FilledTonalButton(
                                 onClick = onToggleOverlayPause,
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
-                                    .testTag("toggle_overlay_pause_button")
+                                    .testTag("toggle_overlay_pause_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                             ) {
                                 Icon(
                                     imageVector = if (overlayState.isScanningPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
                                     contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (overlayState.isScanningPaused) "Resume" else "Pause", maxLines = 1)
+                                Text(
+                                    text = if (overlayState.isScanningPaused) "Resume" else "Pause",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             Button(
                                 onClick = onStopScreenOverlay,
@@ -615,11 +630,18 @@ fun ScannerScreen(
                                     .weight(1f)
                                     .height(48.dp)
                                     .testTag("stop_overlay_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = ScannerRed)
                             ) {
-                                Icon(Icons.Default.StopCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.StopCircle, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Stop", maxLines = 1)
+                                Text(
+                                    text = "Stop",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     } else {

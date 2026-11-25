@@ -99,8 +99,8 @@ class ScreenOverlayService : Service() {
             if (width <= 0 || height <= 0) return
             screenWidth = width
             screenHeight = height
-            val scale = (640f / width.coerceAtLeast(1)).coerceAtMost(1f)
-            val newW = ((width * scale).toInt().coerceAtLeast(320)) and 1.inv()
+            val scale = (720f / width.coerceAtLeast(1)).coerceAtMost(1f)
+            val newW = ((width * scale).toInt().coerceAtLeast(360)) and 1.inv()
             val newH = ((height * scale).toInt().coerceAtLeast(320)) and 1.inv()
             if (newW != captureWidth || newH != captureHeight) {
                 captureWidth = newW
@@ -239,7 +239,7 @@ class ScreenOverlayService : Service() {
             val bounds = wm.maximumWindowMetrics.bounds
             screenWidth = bounds.width().coerceAtLeast(360)
             screenHeight = bounds.height().coerceAtLeast(640)
-            val scale = (640f / screenWidth).coerceAtMost(1f)
+            val scale = (720f / screenWidth).coerceAtMost(1f)
             captureWidth = ((screenWidth * scale).toInt().coerceAtLeast(360)) and 1.inv()
             captureHeight = ((screenHeight * scale).toInt().coerceAtLeast(640)) and 1.inv()
             captureDensity = resources.displayMetrics.densityDpi.coerceAtLeast(120)
@@ -249,7 +249,7 @@ class ScreenOverlayService : Service() {
             wm.defaultDisplay.getMetrics(metrics)
             screenWidth = metrics.widthPixels.coerceAtLeast(360)
             screenHeight = metrics.heightPixels.coerceAtLeast(640)
-            val scale = (640f / screenWidth).coerceAtMost(1f)
+            val scale = (720f / screenWidth).coerceAtMost(1f)
             captureWidth = ((screenWidth * scale).toInt().coerceAtLeast(360)) and 1.inv()
             captureHeight = ((screenHeight * scale).toInt().coerceAtLeast(640)) and 1.inv()
             captureDensity = metrics.densityDpi.coerceAtLeast(120)
@@ -468,9 +468,15 @@ class ScreenOverlayService : Service() {
                 voiceSpeaker.announcePokemon(match.pokemon, prefs)
                 prefsRepository.recordScan(match)
             } else {
+                val mlErr = mlEngine.lastErrorMessage
                 DataDexStateHolder.recordFrameTelemetry(
                     textPreview = analysis.rawTextPreview,
-                    visionTags = analysis.visionLabels
+                    visionTags = analysis.visionLabels,
+                    statusOverride = if (mlErr != null && analysis.rawTextPreview.isBlank()) {
+                        "ML error: $mlErr"
+                    } else {
+                        null
+                    }
                 )
             }
         } catch (t: Throwable) {
