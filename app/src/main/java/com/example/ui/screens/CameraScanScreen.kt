@@ -111,6 +111,7 @@ fun CameraScanScreen(
     var latestMatch by remember { mutableStateOf<ScanMatch?>(null) }
     var liveBoxes by remember { mutableStateOf<List<DetectionOverlayBox>>(emptyList()) }
     var liveOcrPreview by remember { mutableStateOf("") }
+    var cameraErrorMessage by remember { mutableStateOf<String?>(null) }
     var isProcessingFrame by remember { mutableStateOf(false) }
 
     val pulseTransition = rememberInfiniteTransition(label = "camera_scan_pulse")
@@ -140,6 +141,7 @@ fun CameraScanScreen(
     }
 
     LaunchedEffect(Unit) {
+        mlEngine.ensureInitialized(context)
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
@@ -153,65 +155,104 @@ fun CameraScanScreen(
         if (hasCameraPermission) {
             val previewView = remember { PreviewView(context) }
             val cameraController = remember {
-                LifecycleCameraController(context).apply {
-                    cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-                    setEnabledUseCases(CameraController.IMAGE_ANALYSIS)
-                }
+                runCatching {
+                    LifecycleCameraController(context).apply {
+                        cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+                        setEnabledUseCases(CameraController.IMAGE_ANALYSIS)
+                    }
+                }.getOrNull()
             }
 
-            DisposableEffect(lifecycleOwner, enableVisionFallback, allowNetworkLookup) {
-                val mainExecutor = ContextCompat.getMainExecutor(context)
-                val detectors = listOf(
-                    mlEngine.textRecognizer,
-                    mlEngine.imageLabeler,
-                    mlEngine.objectDetector
-                )
-                val analyzer = MlKitAnalyzer(
-                    detectors,
-                    CameraController.COORDINATE_SYSTEM_VIEW_REFERENCED,
-                    mainExecutor
-                ) { result ->
-                    if (isProcessingFrame) return@MlKitAnalyzer
-                    val visionText = result.getValue(mlEngine.textRecognizer)
-                    val labels = result.getValue(mlEngine.imageLabeler).orEmpty()
-                    val objects = result.getValue(mlEngine.objectDetector).orEmpty()
+            DisposableEffect(cameraController, lifecycleOwner, enableVisionFallback, allowNetworkLookup) {
+                if (cameraController == null) {
+                    cameraErrorMessage = "Camera hardware unavailable on this device."
+                    onDispose { }
+                } else {
+                    cameraErrorMessage = null
+                    val mainExecutor = ContextCompat.getMainExecutor(context)
+                    mlEngine.ensureInitialized(context)
 
-                    val viewW = previewView.width.coerceAtLeast(1).toFloat()
-                    val viewH = previewView.height.coerceAtLeast(1).toFloat()
+                    val textDetector = mlEngine.getSafeTextRecognizer(context)
+                    val labelDetector = if (enableVisionFallback) mlEngine.getSafeImageLabeler(context) else null
+                    val objectDetector = if (enableVisionFallback) mlEngine.getSafeObjectDetector(context) else null
+                    val detectors = listOfNotNull(textDetector, labelDetector, objectDetector)
 
-                    isProcessingFrame = true
-                    coroutineScope.launch {
-                        try {
-                            val analysis = withContext(Dispatchers.Default) {
-                                mlEngine.processVisionOutputs(
-                                    visionText = visionText,
-                                    imageLabels = labels,
-                                    detectedObjects = objects,
-                                    frameWidth = viewW,
-                                    frameHeight = viewH,
-                                    enableVisionFallback = enableVisionFallback,
-                                    allowNetworkLookup = allowNetworkLookup
-                                )
+                    runCatching {
+                        previewView.controller = cameraController
+                        if (detectors.isNotEmpty()) {
+                            val analyzer = MlKitAnalyzer(
+                                detectors,
+                                CameraController.COORDINATE_SYSTEM_VIEW_REFERENCED,
+                                mainExecutor
+                            ) { result ->
+                                if (isProcessingFrame) return@MlKitAnalyzer
+                                val visionText = textDetector?.let { det ->
+                                    runCatching { result.getValue(det) }.getOrNull()
+                                }
+                                val labels = labelDetector?.let { det ->
+                                    runCatching { result.getValue(det) }.getOrNull()
+                                }.orEmpty()
+                                val objects = objectDetector?.let { det ->
+                                    runCatching { result.getValue(det) }.getOrNull()
+                                }.orEmpty()
+
+                                val viewW = previewView.width.coerceAtLeast(1).toFloat()
+                                val viewH = previewView.height.coerceAtLeast(1).toFloat()
+
+                                isProcessingFrame = true
+                                coroutineScope.launch {
+                                    try {
+                                        val analysis = withContext(Dispatchers.Default) {
+                                            mlEngine.processVisionOutputs(
+                                                visionText = visionText,
+                                                imageLabels = labels,
+                                                detectedObjects = objects,
+                                                frameWidth = viewW,
+                                                frameHeight = viewH,
+                                                enableVisionFallback = enableVisionFallback,
+                                                allowNetworkLookup = allowNetworkLookup
+                                            )
+                                        }
+                                        liveBoxes = analysis.boxes
+                                        liveOcrPreview = analysis.rawTextPreview
+                                        analysis.match?.let { match ->
+                                            latestMatch = match
+                                            onMatchDetected(match, analysis.rawTextPreview, analysis.visionLabels)
+                                        }
+                                    } catch (_: Throwable) {
+                                        // Keep live camera running if a single frame fails
+                                    } finally {
+                                        isProcessingFrame = false
+                                    }
+                                }
                             }
-                            liveBoxes = analysis.boxes
-                            liveOcrPreview = analysis.rawTextPreview
-                            analysis.match?.let { match ->
-                                latestMatch = match
-                                onMatchDetected(match, analysis.rawTextPreview, analysis.visionLabels)
-                            }
-                        } finally {
-                            isProcessingFrame = false
+                            cameraController.setImageAnalysisAnalyzer(mainExecutor, analyzer)
+                        } else {
+                            cameraErrorMessage = "ML scanner initializing; camera preview only."
                         }
+                        cameraController.bindToLifecycle(lifecycleOwner)
+                        cameraController.initializationFuture.addListener(
+                            {
+                                runCatching {
+                                    val hasBack = cameraController.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)
+                                    val hasFront = cameraController.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+                                    if (!hasBack && hasFront) {
+                                        cameraController.cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                                    } else if (!hasBack && !hasFront) {
+                                        cameraErrorMessage = "No active camera detected on this device."
+                                    }
+                                }
+                            },
+                            mainExecutor
+                        )
+                    }.onFailure { error ->
+                        cameraErrorMessage = error.localizedMessage ?: "Unable to start camera scanner."
                     }
-                }
 
-                cameraController.setImageAnalysisAnalyzer(mainExecutor, analyzer)
-                cameraController.bindToLifecycle(lifecycleOwner)
-                previewView.controller = cameraController
-
-                onDispose {
-                    cameraController.clearImageAnalysisAnalyzer()
-                    cameraController.unbind()
+                    onDispose {
+                        runCatching { cameraController.clearImageAnalysisAnalyzer() }
+                        runCatching { cameraController.unbind() }
+                    }
                 }
             }
 
@@ -383,12 +424,19 @@ fun CameraScanScreen(
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = DexVoid.copy(alpha = 0.82f),
-                border = BorderStroke(1.dp, CyberCyan.copy(alpha = 0.45f))
+                border = BorderStroke(
+                    1.dp,
+                    if (cameraErrorMessage != null) ScannerRed.copy(alpha = 0.65f) else CyberCyan.copy(alpha = 0.45f)
+                )
             ) {
                 Text(
-                    text = if (liveOcrPreview.isNotBlank()) "Reading: ${liveOcrPreview.take(26)}" else "AIM AT POKÉMON OR CARD",
+                    text = when {
+                        cameraErrorMessage != null -> cameraErrorMessage!!
+                        liveOcrPreview.isNotBlank() -> "Reading: ${liveOcrPreview.take(26)}"
+                        else -> "AIM AT POKÉMON OR CARD"
+                    },
                     style = MaterialTheme.typography.labelMedium,
-                    color = CyberCyan,
+                    color = if (cameraErrorMessage != null) ScannerRed else CyberCyan,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                 )
             }

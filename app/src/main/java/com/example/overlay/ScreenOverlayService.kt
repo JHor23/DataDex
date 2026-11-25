@@ -100,8 +100,8 @@ class ScreenOverlayService : Service() {
             screenWidth = width
             screenHeight = height
             val scale = (640f / width.coerceAtLeast(1)).coerceAtMost(1f)
-            val newW = (width * scale).toInt().coerceAtLeast(320)
-            val newH = (height * scale).toInt().coerceAtLeast(320)
+            val newW = ((width * scale).toInt().coerceAtLeast(320)) and 1.inv()
+            val newH = ((height * scale).toInt().coerceAtLeast(320)) and 1.inv()
             if (newW != captureWidth || newH != captureHeight) {
                 captureWidth = newW
                 captureHeight = newH
@@ -110,9 +110,11 @@ class ScreenOverlayService : Service() {
         }
     }
 
+    private val captureLock = Any()
+
     override fun onCreate() {
         super.onCreate()
-        DataDexMlEngine.prepareNativeStorage(applicationContext)
+        DataDexMlEngine.ensureInitialized(applicationContext)
         prefsRepository = UserPreferencesRepository(applicationContext)
         serviceScope.launch {
             prefsRepository.preferencesFlow.collect { prefs ->
@@ -148,17 +150,10 @@ class ScreenOverlayService : Service() {
             }
 
             ACTION_START_OVERLAY_ONLY -> {
-                val notification = buildNotification()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIF_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                    )
-                } else {
-                    startForeground(NOTIF_ID, notification)
+                val started = startForegroundSafely(useMediaProjectionType = false)
+                if (started && !showOverlayWindow()) {
+                    stopOverlayAndSelf()
                 }
-                showOverlayWindow()
                 return START_NOT_STICKY
             }
 
@@ -174,15 +169,8 @@ class ScreenOverlayService : Service() {
                     return START_NOT_STICKY
                 }
 
-                val notification = buildNotification()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIF_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                    )
-                } else {
-                    startForeground(NOTIF_ID, notification)
+                if (!startForegroundSafely(useMediaProjectionType = true)) {
+                    return START_NOT_STICKY
                 }
 
                 startProjectionAndOverlay(resultCode, resultData)
@@ -191,19 +179,58 @@ class ScreenOverlayService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startProjectionAndOverlay(resultCode: Int, resultData: Intent) {
-        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val projection = manager.getMediaProjection(resultCode, resultData) ?: run {
+    private fun startForegroundSafely(useMediaProjectionType: Boolean): Boolean {
+        val notification = buildNotification()
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && useMediaProjectionType) {
+                startForeground(
+                    NOTIF_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(NOTIF_ID, notification)
+            }
+        }.onFailure { error ->
+            DataDexStateHolder.updateOverlayState {
+                it.copy(
+                    isOverlayRunning = false,
+                    isActivelyReading = false,
+                    statusMessage = "Overlay blocked: ${error.localizedMessage ?: "Permission required"}"
+                )
+            }
             stopSelf()
-            return
-        }
-        mediaProjection = projection
-        projection.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
+        }.isSuccess
+    }
 
-        initCaptureDimensions()
-        createVirtualDisplay()
-        showOverlayWindow()
-        startScanningLoop()
+    private fun startProjectionAndOverlay(resultCode: Int, resultData: Intent) {
+        val started = runCatching {
+            val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+                ?: return@runCatching false
+            val projection = manager.getMediaProjection(resultCode, resultData) ?: return@runCatching false
+            mediaProjection = projection
+            projection.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
+
+            initCaptureDimensions()
+            createVirtualDisplay()
+            if (!showOverlayWindow()) {
+                return@runCatching false
+            }
+            startScanningLoop()
+            true
+        }.onFailure { error ->
+            DataDexStateHolder.updateOverlayState {
+                it.copy(
+                    isOverlayRunning = false,
+                    isActivelyReading = false,
+                    statusMessage = "Screen capture failed: ${error.localizedMessage ?: "Try again"}"
+                )
+            }
+        }.getOrDefault(false)
+
+        if (!started) {
+            stopOverlayAndSelf()
+        }
     }
 
     private fun initCaptureDimensions() {
@@ -213,9 +240,9 @@ class ScreenOverlayService : Service() {
             screenWidth = bounds.width().coerceAtLeast(360)
             screenHeight = bounds.height().coerceAtLeast(640)
             val scale = (640f / screenWidth).coerceAtMost(1f)
-            captureWidth = (screenWidth * scale).toInt().coerceAtLeast(360)
-            captureHeight = (screenHeight * scale).toInt().coerceAtLeast(640)
-            captureDensity = resources.displayMetrics.densityDpi
+            captureWidth = ((screenWidth * scale).toInt().coerceAtLeast(360)) and 1.inv()
+            captureHeight = ((screenHeight * scale).toInt().coerceAtLeast(640)) and 1.inv()
+            captureDensity = resources.displayMetrics.densityDpi.coerceAtLeast(120)
         } else {
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
@@ -223,56 +250,56 @@ class ScreenOverlayService : Service() {
             screenWidth = metrics.widthPixels.coerceAtLeast(360)
             screenHeight = metrics.heightPixels.coerceAtLeast(640)
             val scale = (640f / screenWidth).coerceAtMost(1f)
-            captureWidth = (screenWidth * scale).toInt().coerceAtLeast(360)
-            captureHeight = (screenHeight * scale).toInt().coerceAtLeast(640)
-            captureDensity = metrics.densityDpi
+            captureWidth = ((screenWidth * scale).toInt().coerceAtLeast(360)) and 1.inv()
+            captureHeight = ((screenHeight * scale).toInt().coerceAtLeast(640)) and 1.inv()
+            captureDensity = metrics.densityDpi.coerceAtLeast(120)
         }
     }
 
     @SuppressLint("WrongConstant")
     private fun createVirtualDisplay() {
-        imageReader?.close()
-        imageReader = ImageReader.newInstance(
-            captureWidth,
-            captureHeight,
-            PixelFormat.RGBA_8888,
-            2
-        )
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "DataDexCapture",
-            captureWidth,
-            captureHeight,
-            captureDensity,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
-            null,
-            null
-        )
+        synchronized(captureLock) {
+            runCatching { imageReader?.close() }
+            val reader = ImageReader.newInstance(
+                captureWidth,
+                captureHeight,
+                PixelFormat.RGBA_8888,
+                2
+            )
+            imageReader = reader
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "DataDexCapture",
+                captureWidth,
+                captureHeight,
+                captureDensity,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                null,
+                null
+            )
+        }
     }
 
     @SuppressLint("WrongConstant")
     private fun reconfigureVirtualDisplay() {
-        imageReader?.close()
-        imageReader = ImageReader.newInstance(
-            captureWidth,
-            captureHeight,
-            PixelFormat.RGBA_8888,
-            2
-        )
-        virtualDisplay?.resize(captureWidth, captureHeight, captureDensity)
-        virtualDisplay?.surface = imageReader?.surface
+        synchronized(captureLock) {
+            runCatching {
+                imageReader?.close()
+                val reader = ImageReader.newInstance(
+                    captureWidth,
+                    captureHeight,
+                    PixelFormat.RGBA_8888,
+                    2
+                )
+                imageReader = reader
+                virtualDisplay?.resize(captureWidth, captureHeight, captureDensity)
+                virtualDisplay?.surface = reader.surface
+            }
+        }
     }
 
-    private fun showOverlayWindow() {
+    private fun showOverlayWindow(): Boolean {
         val prefs = latestPrefs
-        DataDexStateHolder.updateOverlayState {
-            it.copy(
-                isOverlayRunning = true,
-                isScanningPaused = false,
-                isTargetContentVisible = true,
-                statusMessage = "Overlay active • Watching screen"
-            )
-        }
         if (overlayHudWindow == null) {
             overlayHudWindow = OverlayHudWindow(
                 context = applicationContext,
@@ -339,8 +366,26 @@ class ScreenOverlayService : Service() {
                 }
             )
         }
-        overlayHudWindow?.show(prefs.overlayOpacity)
-        soundEngine.playOverlayUpdated(prefs)
+        val shown = overlayHudWindow?.show(prefs.overlayOpacity) == true
+        if (shown) {
+            DataDexStateHolder.updateOverlayState {
+                it.copy(
+                    isOverlayRunning = true,
+                    isScanningPaused = false,
+                    isTargetContentVisible = true,
+                    statusMessage = "Overlay active • Watching screen"
+                )
+            }
+            soundEngine.playOverlayUpdated(prefs)
+        } else {
+            DataDexStateHolder.updateOverlayState {
+                it.copy(
+                    isOverlayRunning = false,
+                    statusMessage = "Overlay permission required to display HUD"
+                )
+            }
+        }
+        return shown
     }
 
     private fun startScanningLoop() {
@@ -363,105 +408,118 @@ class ScreenOverlayService : Service() {
         val prefs = latestPrefs
         DataDexStateHolder.setActivelyReading(true)
 
-        val freshBitmap = withContext(Dispatchers.Default) { acquireScreenBitmap() }
-        val bitmapToAnalyze = if (freshBitmap != null) {
-            lastCapturedBitmap = freshBitmap
-            freshBitmap
-        } else if (forceUsingLastFrame) {
-            lastCapturedBitmap?.takeIf { !it.isRecycled }
-        } else {
-            null
-        }
+        try {
+            val freshBitmap = withContext(Dispatchers.Default) { acquireScreenBitmap() }
+            val bitmapToAnalyze = if (freshBitmap != null && !freshBitmap.isRecycled) {
+                lastCapturedBitmap = freshBitmap
+                freshBitmap
+            } else if (forceUsingLastFrame) {
+                lastCapturedBitmap?.takeIf { !it.isRecycled }
+            } else {
+                null
+            }
 
-        if (bitmapToAnalyze == null) {
-            // Screen hasn't emitted a new frame since previous scan; keep live heartbeat ticking
+            if (bitmapToAnalyze == null) {
+                // Screen hasn't emitted a new frame since previous scan; keep live heartbeat ticking
+                val current = DataDexStateHolder.overlayState.value
+                DataDexStateHolder.recordFrameTelemetry(
+                    textPreview = current.lastScannedTextPreview,
+                    visionTags = current.lastVisionTags,
+                    statusOverride = if (!current.isTargetContentVisible) {
+                        "Target window hidden • Switch to app"
+                    } else {
+                        "Screen steady • Watching for updates"
+                    }
+                )
+                return@withLock
+            }
+
+            val maskRect = overlayHudWindow?.getNormalizedOverlayRect(screenWidth, screenHeight)
+            val analysis = withContext(Dispatchers.Default) {
+                mlEngine.analyzeBitmap(
+                    bitmap = bitmapToAnalyze,
+                    enableVisionFallback = prefs.enableVisionFallback,
+                    allowNetworkLookup = prefs.enablePokeApiLiveFetch,
+                    maskNormalizedRect = maskRect
+                )
+            }
+            val previousState = DataDexStateHolder.overlayState.value
+            val previousPokemonId = previousState.currentMatch?.pokemon?.id
+            val previousSecondaryIds = previousState.secondaryMatches.map { it.id }
+
+            val match = analysis.match
+            if (match != null) {
+                DataDexStateHolder.setOverlayMatch(
+                    match = match,
+                    textPreview = analysis.rawTextPreview,
+                    visionTags = analysis.visionLabels,
+                    secondaryMatches = analysis.secondaryMatches
+                )
+                val newSecondaryIds = analysis.secondaryMatches.map { it.id }
+                if (previousPokemonId != match.pokemon.id || forceUsingLastFrame) {
+                    soundEngine.playPokemonDetected(
+                        pokemonId = match.pokemon.id,
+                        prefs = prefs,
+                        forcePlay = forceUsingLastFrame
+                    )
+                } else if (previousSecondaryIds != newSecondaryIds) {
+                    soundEngine.playOverlayUpdated(prefs)
+                }
+                voiceSpeaker.announcePokemon(match.pokemon, prefs)
+                prefsRepository.recordScan(match)
+            } else {
+                DataDexStateHolder.recordFrameTelemetry(
+                    textPreview = analysis.rawTextPreview,
+                    visionTags = analysis.visionLabels
+                )
+            }
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
             val current = DataDexStateHolder.overlayState.value
             DataDexStateHolder.recordFrameTelemetry(
                 textPreview = current.lastScannedTextPreview,
                 visionTags = current.lastVisionTags,
-                statusOverride = if (!current.isTargetContentVisible) {
-                    "Target window hidden • Switch to app"
-                } else {
-                    "Screen steady • Watching for updates"
-                }
-            )
-            return@withLock
-        }
-
-        val maskRect = overlayHudWindow?.getNormalizedOverlayRect(screenWidth, screenHeight)
-        val analysis = withContext(Dispatchers.Default) {
-            mlEngine.analyzeBitmap(
-                bitmap = bitmapToAnalyze,
-                enableVisionFallback = prefs.enableVisionFallback,
-                allowNetworkLookup = prefs.enablePokeApiLiveFetch,
-                maskNormalizedRect = maskRect
-            )
-        }
-        val previousState = DataDexStateHolder.overlayState.value
-        val previousPokemonId = previousState.currentMatch?.pokemon?.id
-        val previousSecondaryIds = previousState.secondaryMatches.map { it.id }
-
-        val match = analysis.match
-        if (match != null) {
-            DataDexStateHolder.setOverlayMatch(
-                match = match,
-                textPreview = analysis.rawTextPreview,
-                visionTags = analysis.visionLabels,
-                secondaryMatches = analysis.secondaryMatches
-            )
-            val newSecondaryIds = analysis.secondaryMatches.map { it.id }
-            if (previousPokemonId != match.pokemon.id || forceUsingLastFrame) {
-                soundEngine.playPokemonDetected(
-                    pokemonId = match.pokemon.id,
-                    prefs = prefs,
-                    forcePlay = forceUsingLastFrame
-                )
-            } else if (previousSecondaryIds != newSecondaryIds) {
-                soundEngine.playOverlayUpdated(prefs)
-            }
-            voiceSpeaker.announcePokemon(match.pokemon, prefs)
-            prefsRepository.recordScan(match)
-        } else {
-            DataDexStateHolder.recordFrameTelemetry(
-                textPreview = analysis.rawTextPreview,
-                visionTags = analysis.visionLabels
+                statusOverride = "Scanner standby • Retrying"
             )
         }
     }
 
     private fun acquireScreenBitmap(): Bitmap? {
-        val reader = imageReader ?: return null
-        val image = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return null
-        return try {
-            val plane = image.planes.firstOrNull() ?: return null
-            val buffer: ByteBuffer = plane.buffer
-            buffer.rewind()
-            val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
-            val rowPadding = rowStride - pixelStride * image.width
-            val bitmapWidth = image.width + rowPadding / pixelStride
-            val rawBitmap = obtainReusableBitmap(
-                existing = reusableRawBitmap,
-                width = bitmapWidth,
-                height = image.height
-            ).also { reusableRawBitmap = it }
-            rawBitmap.copyPixelsFromBuffer(buffer)
-            if (bitmapWidth != image.width) {
-                val cropped = obtainReusableBitmap(
-                    existing = reusableCroppedBitmap,
-                    width = image.width,
+        synchronized(captureLock) {
+            val reader = imageReader ?: return null
+            val image = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return null
+            return try {
+                val plane = image.planes.firstOrNull() ?: return null
+                val buffer: ByteBuffer = plane.buffer
+                buffer.rewind()
+                val pixelStride = plane.pixelStride
+                val rowStride = plane.rowStride
+                if (pixelStride <= 0 || image.width <= 0 || image.height <= 0) return null
+                val rowPadding = (rowStride - pixelStride * image.width).coerceAtLeast(0)
+                val bitmapWidth = image.width + rowPadding / pixelStride
+                val rawBitmap = obtainReusableBitmap(
+                    existing = reusableRawBitmap,
+                    width = bitmapWidth,
                     height = image.height
-                ).also { reusableCroppedBitmap = it }
-                val rect = Rect(0, 0, image.width, image.height)
-                Canvas(cropped).drawBitmap(rawBitmap, rect, rect, null)
-                cropped
-            } else {
-                rawBitmap
+                ).also { reusableRawBitmap = it }
+                rawBitmap.copyPixelsFromBuffer(buffer)
+                if (bitmapWidth != image.width) {
+                    val cropped = obtainReusableBitmap(
+                        existing = reusableCroppedBitmap,
+                        width = image.width,
+                        height = image.height
+                    ).also { reusableCroppedBitmap = it }
+                    val rect = Rect(0, 0, image.width, image.height)
+                    Canvas(cropped).drawBitmap(rawBitmap, rect, rect, null)
+                    cropped
+                } else {
+                    rawBitmap
+                }
+            } catch (_: Throwable) {
+                null
+            } finally {
+                runCatching { image.close() }
             }
-        } catch (_: Exception) {
-            null
-        } finally {
-            image.close()
         }
     }
 
@@ -485,15 +543,17 @@ class ScreenOverlayService : Service() {
         scanJob?.cancel()
         scanJob = null
         soundEngine.resetDetectionLock()
-        recycleCaptureBitmaps()
-        overlayHudWindow?.dismiss()
+        synchronized(captureLock) {
+            recycleCaptureBitmaps()
+            runCatching { virtualDisplay?.release() }
+            virtualDisplay = null
+            runCatching { imageReader?.close() }
+            imageReader = null
+        }
+        runCatching { overlayHudWindow?.dismiss() }
         overlayHudWindow = null
-        virtualDisplay?.release()
-        virtualDisplay = null
-        imageReader?.close()
-        imageReader = null
-        mediaProjection?.unregisterCallback(projectionCallback)
-        mediaProjection?.stop()
+        runCatching { mediaProjection?.unregisterCallback(projectionCallback) }
+        runCatching { mediaProjection?.stop() }
         mediaProjection = null
         DataDexStateHolder.updateOverlayState {
             it.copy(
@@ -503,18 +563,22 @@ class ScreenOverlayService : Service() {
                 statusMessage = "Overlay stopped"
             )
         }
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
 
     override fun onDestroy() {
         scanJob?.cancel()
-        recycleCaptureBitmaps()
-        overlayHudWindow?.dismiss()
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.unregisterCallback(projectionCallback)
-        mediaProjection?.stop()
+        synchronized(captureLock) {
+            recycleCaptureBitmaps()
+            runCatching { virtualDisplay?.release() }
+            virtualDisplay = null
+            runCatching { imageReader?.close() }
+            imageReader = null
+        }
+        runCatching { overlayHudWindow?.dismiss() }
+        runCatching { mediaProjection?.unregisterCallback(projectionCallback) }
+        runCatching { mediaProjection?.stop() }
         mlEngine.close()
         serviceScope.cancel()
         super.onDestroy()
@@ -530,7 +594,7 @@ class ScreenOverlayService : Service() {
                 description = getString(R.string.overlay_channel_desc)
             }
             val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            nm?.createNotificationChannel(channel)
         }
     }
 
@@ -549,7 +613,7 @@ class ScreenOverlayService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_datadex_notification)
             .setContentTitle(getString(R.string.overlay_notif_title))
             .setContentText(getString(R.string.overlay_notif_body))
             .setContentIntent(openAppIntent)

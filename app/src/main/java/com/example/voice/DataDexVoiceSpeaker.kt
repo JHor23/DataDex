@@ -171,8 +171,10 @@ class DataDexVoiceSpeaker private constructor(context: Context) : TextToSpeech.O
         stopActiveRetroTrack()
 
         if (classicMode) {
-            engine.setSpeechRate((prefs.voiceSpeechRate * 0.94f).coerceIn(0.65f, 1.45f))
-            engine.setPitch((prefs.voicePitch * 0.87f).coerceIn(0.68f, 1.25f))
+            runCatching {
+                engine.setSpeechRate((prefs.voiceSpeechRate * 0.94f).coerceIn(0.65f, 1.45f))
+                engine.setPitch((prefs.voicePitch * 0.87f).coerceIn(0.68f, 1.25f))
+            }
             applyVoiceSelection(engine, prefs.voiceName, preferClassicMaleUs = true)
 
             val utteranceId = "datadex_classic_${pokemon.id}_$now"
@@ -195,14 +197,18 @@ class DataDexVoiceSpeaker private constructor(context: Context) : TextToSpeech.O
             if (result != TextToSpeech.SUCCESS) {
                 pendingClassicUtterances.remove(utteranceId)
                 tempFile.delete()
-                engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "datadex_fallback_${pokemon.id}_$now")
+                runCatching {
+                    engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "datadex_fallback_${pokemon.id}_$now")
+                }
             }
         } else {
             pendingClassicUtterances.clear()
-            engine.setSpeechRate(prefs.voiceSpeechRate.coerceIn(0.65f, 1.6f))
-            engine.setPitch(prefs.voicePitch.coerceIn(0.7f, 1.4f))
-            applyVoiceSelection(engine, prefs.voiceName, preferClassicMaleUs = false)
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "datadex_${pokemon.id}_$now")
+            runCatching {
+                engine.setSpeechRate(prefs.voiceSpeechRate.coerceIn(0.65f, 1.6f))
+                engine.setPitch(prefs.voicePitch.coerceIn(0.7f, 1.4f))
+                applyVoiceSelection(engine, prefs.voiceName, preferClassicMaleUs = false)
+                engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "datadex_${pokemon.id}_$now")
+            }
         }
     }
 

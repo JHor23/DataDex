@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.datadex.qrvkmp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -66,6 +66,9 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  androidResources {
+    noCompress += listOf("tflite", "mobile_ica_8bit_with_metadata_tflite")
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

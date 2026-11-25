@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Build
+import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedContent
@@ -112,9 +113,10 @@ class OverlayHudWindow(
     private var layoutParams: WindowManager.LayoutParams? = null
     private var overlayAlpha: Float = 0.96f
 
-    fun show(opacity: Float = 0.96f) {
+    fun show(opacity: Float = 0.96f): Boolean {
         overlayAlpha = opacity
-        if (composeView != null) return
+        if (composeView != null) return true
+        if (!Settings.canDrawOverlays(context)) return false
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -162,10 +164,20 @@ class OverlayHudWindow(
                 }
             }
         }
-        owner.attachToView(view)
-        windowManager.addView(view, params)
-        composeView = view
-        lifecycleOwner = owner
+        return runCatching {
+            owner.attachToView(view)
+            windowManager.addView(view, params)
+            composeView = view
+            lifecycleOwner = owner
+            true
+        }.getOrElse {
+            runCatching { windowManager.removeViewImmediate(view) }
+            runCatching { owner.destroy() }
+            composeView = null
+            lifecycleOwner = null
+            layoutParams = null
+            false
+        }
     }
 
     /**

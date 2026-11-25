@@ -212,15 +212,24 @@ fun DataDexRootApp(
     val mediaProjectionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
             val serviceIntent = ScreenOverlayService.startIntent(
                 context = context,
                 resultCode = result.resultCode,
-                data = result.data!!
+                data = data
             )
-            ContextCompat.startForegroundService(context, serviceIntent)
+            val launched = runCatching {
+                ContextCompat.startForegroundService(context, serviceIntent)
+            }.isSuccess
             scope.launch {
-                snackbarHostState.showSnackbar("DataDex Screen Overlay launched!")
+                snackbarHostState.showSnackbar(
+                    if (launched) {
+                        "DataDex Screen Overlay launched!"
+                    } else {
+                        "Unable to start Screen Overlay service on this device."
+                    }
+                )
             }
         } else {
             scope.launch {
@@ -229,11 +238,27 @@ fun DataDexRootApp(
         }
     }
 
+    fun requestMediaProjection() {
+        val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+        if (projectionManager == null) {
+            scope.launch {
+                snackbarHostState.showSnackbar("Screen capture is unavailable on this device.")
+            }
+            return
+        }
+        runCatching {
+            mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+        }.onFailure {
+            scope.launch {
+                snackbarHostState.showSnackbar("Unable to open screen capture prompt.")
+            }
+        }
+    }
+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ ->
-        val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+        requestMediaProjection()
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -242,23 +267,40 @@ fun DataDexRootApp(
         uri?.let { viewModel.analyzePhotoUri(it) }
     }
 
+    fun openOverlayPermissionSettings() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:${context.packageName}")
+        )
+        runCatching {
+            overlaySettingsLauncher.launch(intent)
+        }.onFailure {
+            runCatching {
+                overlaySettingsLauncher.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+            }.onFailure {
+                scope.launch {
+                    snackbarHostState.showSnackbar("Open Android Settings to allow Display Over Other Apps.")
+                }
+            }
+        }
+    }
+
     fun launchOverlayFlow() {
         if (!Settings.canDrawOverlays(context)) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:${context.packageName}")
-            )
-            overlaySettingsLauncher.launch(intent)
+            openOverlayPermissionSettings()
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            runCatching {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }.onFailure {
+                requestMediaProjection()
+            }
         } else {
-            val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+            requestMediaProjection()
         }
     }
 
@@ -720,30 +762,40 @@ fun DataDexRootApp(
                                 scannerUi = scannerUi,
                                 overlayState = overlayState,
                                 hasOverlayPermission = hasOverlayPermission,
-                                onRequestOverlayPermission = {
-                                    val intent = Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:${context.packageName}")
-                                    )
-                                    overlaySettingsLauncher.launch(intent)
-                                },
+                                onRequestOverlayPermission = { openOverlayPermissionSettings() },
                                 onStartScreenOverlay = { launchOverlayFlow() },
                                 onStopScreenOverlay = {
-                                    context.startService(ScreenOverlayService.stopIntent(context))
+                                    runCatching {
+                                        context.startService(ScreenOverlayService.stopIntent(context))
+                                    }
                                 },
                                 onToggleOverlayPause = { viewModel.toggleOverlayPause() },
                                 onToggleOverlayAbilities = { viewModel.toggleOverlayAbilities() },
                                 onScanScreenNow = {
-                                    context.startService(ScreenOverlayService.scanNowIntent(context))
+                                    if (overlayState.isOverlayRunning) {
+                                        runCatching {
+                                            context.startService(ScreenOverlayService.scanNowIntent(context))
+                                        }
+                                    }
                                 },
                                 onClearOverlayMatch = {
-                                    context.startService(ScreenOverlayService.clearMatchIntent(context))
+                                    if (overlayState.isOverlayRunning) {
+                                        runCatching {
+                                            context.startService(ScreenOverlayService.clearMatchIntent(context))
+                                        }
+                                    }
                                 },
                                 onLaunchCameraScan = { navController.navigate(CameraScanRoute) },
                                 onLaunchPhotoPicker = {
-                                    photoPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
+                                    runCatching {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    }.onFailure {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar("Unable to open photo picker on this device.")
+                                        }
+                                    }
                                 },
                                 onTestSampleCard = { name, level, hpText ->
                                     viewModel.testMlScreenReadOnSample(name, level, hpText)

@@ -6,13 +6,16 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.Build
 import com.example.data.PokemonRepository
 import com.example.model.DetectionOverlayBox
 import com.example.model.PokemonEntry
 import com.example.model.RecognitionMethod
 import com.example.model.ScanMatch
 import com.google.android.gms.tasks.Task
+import com.google.mlkit.common.sdkinternal.MlKitContext
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.interfaces.Detector
 import com.google.mlkit.vision.label.ImageLabel
 import com.google.mlkit.vision.label.ImageLabeler
 import com.google.mlkit.vision.label.ImageLabeling
@@ -25,8 +28,7 @@ import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import kotlin.coroutines.resume
@@ -48,31 +50,66 @@ data class MlFrameAnalysis(
 class DataDexMlEngine(
     private val repository: PokemonRepository = PokemonRepository.getInstance()
 ) {
-    val textRecognizer: TextRecognizer by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    }
+    private var _textRecognizer: TextRecognizer? = null
+    private var _imageLabeler: ImageLabeler? = null
+    private var _objectDetector: ObjectDetector? = null
+
+    val textRecognizer: TextRecognizer
+        get() = _textRecognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            .also { _textRecognizer = it }
 
     private val maskPaint = Paint().apply {
         color = Color.BLACK
         style = Paint.Style.FILL
     }
 
-    val imageLabeler: ImageLabeler by lazy {
-        ImageLabeling.getClient(
+    val imageLabeler: ImageLabeler
+        get() = _imageLabeler ?: ImageLabeling.getClient(
             ImageLabelerOptions.Builder()
                 .setConfidenceThreshold(0.52f)
                 .build()
-        )
-    }
+        ).also { _imageLabeler = it }
 
-    val objectDetector: ObjectDetector by lazy {
-        ObjectDetection.getClient(
+    val objectDetector: ObjectDetector
+        get() = _objectDetector ?: ObjectDetection.getClient(
             ObjectDetectorOptions.Builder()
                 .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
                 .enableMultipleObjects()
                 .enableClassification()
                 .build()
-        )
+        ).also { _objectDetector = it }
+
+    fun ensureInitialized(context: Context) {
+        Companion.ensureInitialized(context)
+    }
+
+    fun getSafeTextRecognizer(context: Context): TextRecognizer? {
+        ensureInitialized(context)
+        return runCatching { textRecognizer }.getOrNull()
+    }
+
+    fun getSafeImageLabeler(context: Context): ImageLabeler? {
+        ensureInitialized(context)
+        return runCatching { imageLabeler }.getOrNull()
+    }
+
+    fun getSafeObjectDetector(context: Context): ObjectDetector? {
+        ensureInitialized(context)
+        return runCatching { objectDetector }.getOrNull()
+    }
+
+    fun createCameraDetectors(
+        context: Context,
+        includeVisionDetectors: Boolean
+    ): List<Detector<*>> {
+        ensureInitialized(context)
+        return buildList {
+            getSafeTextRecognizer(context)?.let { add(it) }
+            if (includeVisionDetectors) {
+                getSafeImageLabeler(context)?.let { add(it) }
+                getSafeObjectDetector(context)?.let { add(it) }
+            }
+        }
     }
 
     suspend fun analyzeBitmap(
@@ -80,30 +117,22 @@ class DataDexMlEngine(
         enableVisionFallback: Boolean = true,
         allowNetworkLookup: Boolean = true,
         maskNormalizedRect: RectF? = null
-    ): MlFrameAnalysis = coroutineScope {
-        val scanBitmap = if (maskNormalizedRect != null && !maskNormalizedRect.isEmpty) {
-            val mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(mutable)
-            val w = mutable.width.toFloat()
-            val h = mutable.height.toFloat()
-            canvas.drawRect(
-                (maskNormalizedRect.left * w).coerceIn(0f, w),
-                (maskNormalizedRect.top * h).coerceIn(0f, h),
-                (maskNormalizedRect.right * w).coerceIn(0f, w),
-                (maskNormalizedRect.bottom * h).coerceIn(0f, h),
-                maskPaint
-            )
-            mutable
-        } else {
-            bitmap
+    ): MlFrameAnalysis {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return EMPTY_ANALYSIS
         }
 
-        try {
-            val image = InputImage.fromBitmap(scanBitmap, 0)
-            val width = scanBitmap.width.coerceAtLeast(1).toFloat()
-            val height = scanBitmap.height.coerceAtLeast(1).toFloat()
+        val normalizedBitmap = prepareScannableBitmap(bitmap, maskNormalizedRect) ?: return EMPTY_ANALYSIS
 
-            val visionText = runCatching { textRecognizer.process(image).awaitResult() }.getOrNull()
+        try {
+            val image = runCatching { InputImage.fromBitmap(normalizedBitmap, 0) }.getOrNull()
+                ?: return EMPTY_ANALYSIS
+            val width = normalizedBitmap.width.coerceAtLeast(1).toFloat()
+            val height = normalizedBitmap.height.coerceAtLeast(1).toFloat()
+
+            val visionText = runCatching { textRecognizer.process(image).awaitResult() }
+                .onFailure { if (it is CancellationException) throw it }
+                .getOrNull()
             val textLines = visionText?.textBlocks
                 ?.flatMap { block -> block.lines.map { it.text } }
                 .orEmpty()
@@ -112,35 +141,99 @@ class DataDexMlEngine(
             val imageLabels: List<ImageLabel>
             val detectedObjects: List<DetectedObject>
             if (ocrCandidates.isEmpty() && enableVisionFallback) {
-                val labelsDeferred = async {
-                    runCatching { imageLabeler.process(image).awaitResult() }.getOrElse { emptyList() }
-                }
-                val objectsDeferred = async {
-                    runCatching { objectDetector.process(image).awaitResult() }.getOrElse { emptyList() }
-                }
-                imageLabels = labelsDeferred.await()
-                detectedObjects = objectsDeferred.await()
+                imageLabels = runCatching { imageLabeler.process(image).awaitResult() }
+                    .onFailure { if (it is CancellationException) throw it }
+                    .getOrElse { emptyList() }
+                detectedObjects = runCatching { objectDetector.process(image).awaitResult() }
+                    .onFailure { if (it is CancellationException) throw it }
+                    .getOrElse { emptyList() }
             } else {
                 imageLabels = emptyList()
                 detectedObjects = emptyList()
             }
 
-            processVisionOutputs(
-                visionText = visionText,
-                imageLabels = imageLabels,
-                detectedObjects = detectedObjects,
-                frameWidth = width,
-                frameHeight = height,
-                enableVisionFallback = enableVisionFallback,
-                allowNetworkLookup = allowNetworkLookup,
-                precomputedTextLines = textLines,
-                precomputedOcrCandidates = ocrCandidates
+            return runCatching {
+                processVisionOutputs(
+                    visionText = visionText,
+                    imageLabels = imageLabels,
+                    detectedObjects = detectedObjects,
+                    frameWidth = width,
+                    frameHeight = height,
+                    enableVisionFallback = enableVisionFallback,
+                    allowNetworkLookup = allowNetworkLookup,
+                    precomputedTextLines = textLines,
+                    precomputedOcrCandidates = ocrCandidates
+                )
+            }.onFailure {
+                if (it is CancellationException) throw it
+            }.getOrDefault(
+                MlFrameAnalysis(
+                    match = null,
+                    secondaryMatches = emptyList(),
+                    rawTextPreview = textLines.take(3).joinToString(" • ").take(90),
+                    visionLabels = emptyList(),
+                    boxes = emptyList()
+                )
             )
         } finally {
-            if (scanBitmap !== bitmap) {
-                scanBitmap.recycle()
+            if (normalizedBitmap !== bitmap && !normalizedBitmap.isRecycled) {
+                normalizedBitmap.recycle()
             }
         }
+    }
+
+    private fun prepareScannableBitmap(
+        source: Bitmap,
+        maskNormalizedRect: RectF?
+    ): Bitmap? {
+        val needsConfigCopy = source.config != Bitmap.Config.ARGB_8888 ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE)
+        val needsPadding = source.width < MIN_MLKIT_DIMENSION || source.height < MIN_MLKIT_DIMENSION
+        val needsMask = maskNormalizedRect != null && !maskNormalizedRect.isEmpty
+
+        if (!needsConfigCopy && !needsPadding && !needsMask) {
+            return source
+        }
+
+        val targetW = source.width.coerceAtLeast(MIN_MLKIT_DIMENSION)
+        val targetH = source.height.coerceAtLeast(MIN_MLKIT_DIMENSION)
+
+        return runCatching {
+            val out = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+            canvas.drawColor(Color.BLACK)
+
+            val softwareSource = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                source.config == Bitmap.Config.HARDWARE
+            ) {
+                source.copy(Bitmap.Config.ARGB_8888, false)
+            } else {
+                source
+            }
+
+            try {
+                if (softwareSource != null && !softwareSource.isRecycled) {
+                    canvas.drawBitmap(softwareSource, 0f, 0f, null)
+                }
+            } finally {
+                if (softwareSource !== source && softwareSource != null && !softwareSource.isRecycled) {
+                    softwareSource.recycle()
+                }
+            }
+
+            if (needsMask && maskNormalizedRect != null) {
+                val w = source.width.toFloat()
+                val h = source.height.toFloat()
+                canvas.drawRect(
+                    (maskNormalizedRect.left * w).coerceIn(0f, w),
+                    (maskNormalizedRect.top * h).coerceIn(0f, h),
+                    (maskNormalizedRect.right * w).coerceIn(0f, w),
+                    (maskNormalizedRect.bottom * h).coerceIn(0f, h),
+                    maskPaint
+                )
+            }
+            out
+        }.getOrNull()
     }
 
     suspend fun processVisionOutputs(
@@ -262,12 +355,32 @@ class DataDexMlEngine(
     }
 
     fun close() {
-        runCatching { textRecognizer.close() }
-        runCatching { imageLabeler.close() }
-        runCatching { objectDetector.close() }
+        runCatching { _textRecognizer?.close() }
+        runCatching { _imageLabeler?.close() }
+        runCatching { _objectDetector?.close() }
+        _textRecognizer = null
+        _imageLabeler = null
+        _objectDetector = null
     }
 
     companion object {
+        private const val MIN_MLKIT_DIMENSION = 32
+        private val EMPTY_ANALYSIS = MlFrameAnalysis(
+            match = null,
+            secondaryMatches = emptyList(),
+            rawTextPreview = "",
+            visionLabels = emptyList(),
+            boxes = emptyList()
+        )
+
+        fun ensureInitialized(context: Context) {
+            val appContext = context.applicationContext ?: context
+            prepareNativeStorage(appContext)
+            runCatching {
+                MlKitContext.initializeIfNeeded(appContext)
+            }
+        }
+
         fun prepareNativeStorage(context: Context) {
             runCatching {
                 val accelDir = File(context.filesDir, "com.google.mlkit.acceleration")

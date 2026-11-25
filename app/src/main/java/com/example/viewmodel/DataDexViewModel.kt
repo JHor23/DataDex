@@ -27,6 +27,7 @@ import com.example.model.TypeEffectivenessChart
 import com.example.audio.ScouterSoundEngine
 import com.example.voice.DataDexVoiceSpeaker
 import com.example.voice.VoiceOption
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -80,7 +81,7 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
     private val soundEngine = ScouterSoundEngine.getInstance(application.applicationContext)
 
     init {
-        DataDexMlEngine.prepareNativeStorage(application.applicationContext)
+        DataDexMlEngine.ensureInitialized(application.applicationContext)
     }
 
     val overlayState: StateFlow<OverlayHudState> = DataDexStateHolder.overlayState
@@ -128,6 +129,7 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
 
     fun analyzePhotoUri(uri: Uri) {
         viewModelScope.launch {
+            DataDexMlEngine.ensureInitialized(getApplication())
             _scannerUi.update { it.copy(isAnalyzingImage = true, statusBanner = "Scanning image for Pokémon...") }
             val bitmap = withContext(Dispatchers.IO) { decodeScaledBitmap(uri) }
             if (bitmap == null) {
@@ -168,8 +170,18 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
                         )
                     }
                 }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                _scannerUi.update {
+                    it.copy(
+                        isAnalyzingImage = false,
+                        statusBanner = "Scan error: ${t.localizedMessage ?: "Unable to analyze image"}"
+                    )
+                }
             } finally {
-                bitmap.recycle()
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
             }
         }
     }
@@ -180,6 +192,7 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
      */
     fun testMlScreenReadOnSample(pokemonName: String, level: Int, hpText: String) {
         viewModelScope.launch {
+            DataDexMlEngine.ensureInitialized(getApplication())
             _scannerUi.update { it.copy(isAnalyzingImage = true, statusBanner = "Scanning sample card...") }
             val bitmap = withContext(Dispatchers.Default) {
                 renderSampleBattleFrameBitmap(pokemonName, level, hpText)
@@ -217,8 +230,18 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
                         )
                     }
                 }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                _scannerUi.update {
+                    it.copy(
+                        isAnalyzingImage = false,
+                        statusBanner = "Sample scan error: ${t.localizedMessage ?: "Unable to analyze"}"
+                    )
+                }
             } finally {
-                bitmap.recycle()
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
             }
         }
     }
@@ -569,14 +592,20 @@ class DataDexViewModel(application: Application) : AndroidViewModel(application)
             val resolver = getApplication<Application>().contentResolver
             val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOpts) }
+            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+                return null
+            }
             val maxDim = maxOf(boundsOpts.outWidth, boundsOpts.outHeight).coerceAtLeast(1)
             var sampleSize = 1
             while (maxDim / sampleSize > 1080) {
                 sampleSize *= 2
             }
-            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
             resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, decodeOpts) }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
     }
