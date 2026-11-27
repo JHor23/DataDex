@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
@@ -45,7 +46,7 @@ import org.robolectric.shadows.ShadowSettings
 import java.io.ByteArrayOutputStream
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [36], qualifiers = "w411dp-h915dp-xxhdpi")
 class ScannerCrashReproTest {
 
     @get:Rule
@@ -332,5 +333,39 @@ class ScannerCrashReproTest {
         assertNotNull(homeIntent)
         assertEquals(Intent.ACTION_MAIN, homeIntent!!.action)
         assertTrue(homeIntent.hasCategory(Intent.CATEGORY_HOME))
+    }
+
+    @Test
+    fun `about me screen combines story and 5 traits inside bio without affecting other cards`() {
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("nav_settings_about_dropdown").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("nav_dropdown_about_me").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("about_me_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bio_tab_story").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bio_tab_traits").assertIsDisplayed()
+        composeTestRule.onNodeWithText("DataDex gives you instant access", substring = true).assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("bio_tab_traits").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("bio_trait_chip_0").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bio_trait_chip_4").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Deadpool-style sarcasm", substring = true).assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("bio_trait_chip_4").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Dad, Husband, Eagle Scout, Gamer, & Hooper.", substring = true)
+            .assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("bio_tab_story").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Lifelong Pokémon fan", substring = true).assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("about_kofi_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("about_source_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("about_projects_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("about_version_footer").assertIsDisplayed()
     }
 }

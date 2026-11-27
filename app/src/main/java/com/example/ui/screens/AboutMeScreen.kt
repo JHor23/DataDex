@@ -1,12 +1,19 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -35,6 +42,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,7 +57,10 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
@@ -61,10 +75,52 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.VoltGold
 
+private val NeonPurple = Color(0xFFA855F7)
+
+private enum class BioTab {
+    STORY,
+    TRAITS
+}
+
+private data class AboutBioTrait(
+    val title: String,
+    val detail: String,
+    val dotColor: Color
+)
+
+private val jhorBioTraits = listOf(
+    AboutBioTrait(
+        title = "Not Your Average Dev",
+        detail = "Powered by caffeine, dad jokes, & a healthy dose of Deadpool-style sarcasm.",
+        dotColor = CyberCyan
+    ),
+    AboutBioTrait(
+        title = "Indie App Builder",
+        detail = "Crafting lightweight, bloat-free Android, PC, & web based applications.",
+        dotColor = NeonPurple
+    ),
+    AboutBioTrait(
+        title = "For The People",
+        detail = "Dedicated to open-source, free, & user-controlled software.",
+        dotColor = CyberCyan
+    ),
+    AboutBioTrait(
+        title = "Gaming Tinkerer",
+        detail = "Modern titles & retro emulation across PC, handhelds, & mobile.",
+        dotColor = NeonPurple
+    ),
+    AboutBioTrait(
+        title = "Off the Clock",
+        detail = "Dad, Husband, Eagle Scout, Gamer, & Hooper.",
+        dotColor = CyberCyan
+    )
+)
+
 private const val KOFI_URL = "https://ko-fi.com/jhor23"
 private const val SOURCE_URL = "https://github.com/JHor23/DataDex"
 private const val PROJECTS_URL = "https://github.com/JHor23/"
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AboutMeScreen(
     modifier: Modifier = Modifier
@@ -145,7 +201,9 @@ fun AboutMeScreen(
             }
         }
 
-        // Bio Section
+        // Bio Section (combines DataDex story + JHor dev traits inside the Bio card only)
+        var selectedBioTab by remember { mutableStateOf(BioTab.STORY) }
+        var selectedTraitIndex by remember { mutableStateOf(0) }
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -154,29 +212,162 @@ fun AboutMeScreen(
         ) {
             Column(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = CyberCyan,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "Bio",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = TextPrimary
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = CyberCyan,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Bio",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextPrimary
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(DexVoid)
+                            .border(1.dp, DexOutline, RoundedCornerShape(999.dp))
+                            .padding(2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        BioPillTab(
+                            label = "Story",
+                            selected = selectedBioTab == BioTab.STORY,
+                            accentColor = CyberCyan,
+                            testTag = "bio_tab_story",
+                            onClick = { selectedBioTab = BioTab.STORY }
+                        )
+                        BioPillTab(
+                            label = "5 Traits",
+                            selected = selectedBioTab == BioTab.TRAITS,
+                            accentColor = NeonPurple,
+                            testTag = "bio_tab_traits",
+                            onClick = { selectedBioTab = BioTab.TRAITS }
+                        )
+                    }
                 }
-                Text(
-                    text = "Lifelong Pokémon fan building fast, practical tools for trainers and collectors. DataDex was crafted to make type matchups, stats, and real-time screen scanning effortless during battles and card hunting.",
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 17.sp),
-                    color = TextSecondary
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.5.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(
+                                    CyberCyan,
+                                    NeonPurple,
+                                    DexOutline.copy(alpha = 0.25f)
+                                )
+                            )
+                        )
                 )
+
+                AnimatedContent(
+                    targetState = selectedBioTab,
+                    transitionSpec = { fadeIn() togetherWith fadeOut() },
+                    label = "bio_tab_transition"
+                ) { tab ->
+                    when (tab) {
+                        BioTab.STORY -> {
+                            Text(
+                                text = "Lifelong Pokémon fan building fast, practical tools for trainers, collectors, and everyday players. DataDex gives you instant access to type matchups, stats, abilities, and preferred natures. With built-in real-time screen scanning, it’s made to keep up during battles, card hunts, and gaming sessions.",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 13.sp,
+                                    lineHeight = 16.5.sp
+                                ),
+                                color = TextSecondary
+                            )
+                        }
+                        BioTab.TRAITS -> {
+                            val activeTrait = jhorBioTraits[selectedTraitIndex.coerceIn(jhorBioTraits.indices)]
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    jhorBioTraits.forEachIndexed { index, trait ->
+                                        val isSelected = index == selectedTraitIndex
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(
+                                                    if (isSelected) {
+                                                        trait.dotColor.copy(alpha = 0.18f)
+                                                    } else {
+                                                        DexVoid.copy(alpha = 0.75f)
+                                                    }
+                                                )
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (isSelected) {
+                                                        trait.dotColor.copy(alpha = 0.75f)
+                                                    } else {
+                                                        DexOutline
+                                                    },
+                                                    shape = RoundedCornerShape(999.dp)
+                                                )
+                                                .clickable { selectedTraitIndex = index }
+                                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                                .testTag("bio_trait_chip_$index"),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(5.dp)
+                                                    .clip(CircleShape)
+                                                    .background(trait.dotColor)
+                                            )
+                                            Text(
+                                                text = trait.title,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 10.5.sp,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                                ),
+                                                color = if (isSelected) TextPrimary else TextSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = buildAnnotatedString {
+                                        withStyle(
+                                            SpanStyle(
+                                                color = activeTrait.dotColor,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        ) {
+                                            append("${activeTrait.title}: ")
+                                        }
+                                        withStyle(SpanStyle(color = TextSecondary)) {
+                                            append(activeTrait.detail)
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    ),
+                                    modifier = Modifier.testTag("bio_trait_detail_text")
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -370,6 +561,33 @@ private fun AboutLinkButton(
             text = label,
             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
             color = TextPrimary
+        )
+    }
+}
+
+@Composable
+private fun BioPillTab(
+    label: String,
+    selected: Boolean,
+    accentColor: Color,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (selected) accentColor.copy(alpha = 0.2f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 3.dp)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+            ),
+            color = if (selected) accentColor else TextMuted
         )
     }
 }
