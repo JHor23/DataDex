@@ -20,10 +20,32 @@ import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 object DataDexStateHolder {
     private val _overlayState = MutableStateFlow(OverlayHudState())
     val overlayState: StateFlow<OverlayHudState> = _overlayState.asStateFlow()
+
+    private val startedActivityCount = AtomicInteger(0)
+    private val _isAppInForeground = MutableStateFlow(false)
+    val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
+
+    fun onAppActivityStarted() {
+        val active = startedActivityCount.incrementAndGet() > 0
+        _isAppInForeground.value = active
+    }
+
+    fun onAppActivityStopped() {
+        val remaining = startedActivityCount.updateAndGet { current ->
+            if (current > 0) current - 1 else 0
+        }
+        _isAppInForeground.value = remaining > 0
+    }
+
+    fun setAppInForeground(inForeground: Boolean) {
+        startedActivityCount.set(if (inForeground) 1 else 0)
+        _isAppInForeground.value = inForeground
+    }
 
     fun updateOverlayState(transform: (OverlayHudState) -> OverlayHudState) {
         _overlayState.update(transform)
@@ -31,6 +53,16 @@ object DataDexStateHolder {
 
     fun setActivelyReading(reading: Boolean) {
         _overlayState.update { it.copy(isActivelyReading = reading) }
+    }
+
+    fun recordPausedForOwnApp() {
+        _overlayState.update { state ->
+            state.copy(
+                isActivelyReading = false,
+                isPausedForOwnApp = true,
+                statusMessage = "DataDex open • Switch to another app to scan"
+            )
+        }
     }
 
     fun setOverlayMatch(
@@ -51,6 +83,7 @@ object DataDexStateHolder {
                 lastScanTimestampMillis = now,
                 lastMatchUpdatedMillis = if (changedPokemon || state.lastMatchUpdatedMillis == 0L) now else state.lastMatchUpdatedMillis,
                 isActivelyReading = false,
+                isPausedForOwnApp = false,
                 statusMessage = "Identified ${match.pokemon.name}"
             )
         }
@@ -83,6 +116,7 @@ object DataDexStateHolder {
                 framesProcessed = state.framesProcessed + 1,
                 lastScanTimestampMillis = now,
                 isActivelyReading = false,
+                isPausedForOwnApp = false,
                 statusMessage = statusOverride ?: if (textPreview.isNotBlank()) {
                     "Reading text • Watching for Pokémon"
                 } else {

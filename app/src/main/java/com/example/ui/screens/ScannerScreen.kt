@@ -167,7 +167,7 @@ fun ScannerScreen(
         }
     }
 
-    val isActivelyScanning = (overlayState.isOverlayRunning && !overlayState.isScanningPaused) ||
+    val isActivelyScanning = (overlayState.isOverlayRunning && !overlayState.isScanningPaused && !overlayState.isPausedForOwnApp) ||
         scannerUi.isAnalyzingImage
 
     var pulseScale = 1f
@@ -272,8 +272,8 @@ fun ScannerScreen(
                 )
                 // Visual Scan Pulse Overlay (Active only during scanning, never when idle)
                 val pulseTint = when {
-                    overlayState.isOverlayRunning && !overlayState.isScanningPaused -> EmeraldMatch
-                    overlayState.isOverlayRunning && overlayState.isScanningPaused -> VoltGold
+                    overlayState.isOverlayRunning && (overlayState.isScanningPaused || overlayState.isPausedForOwnApp) -> VoltGold
+                    overlayState.isOverlayRunning -> EmeraldMatch
                     scannerUi.isAnalyzingImage -> CyberCyan
                     else -> scouterBlue
                 }
@@ -377,6 +377,7 @@ fun ScannerScreen(
                                 Text(
                                     text = when {
                                         overlayState.isOverlayRunning && overlayState.isScanningPaused -> "OVERLAY PAUSED"
+                                        overlayState.isOverlayRunning && overlayState.isPausedForOwnApp -> "STANDBY • DATADEX OPEN"
                                         overlayState.isOverlayRunning -> "OVERLAY ACTIVE"
                                         scannerUi.isAnalyzingImage -> "SCANNING IMAGE"
                                         else -> "SCANNER READY"
@@ -482,13 +483,14 @@ fun ScannerScreen(
                             )
                         }
 
+                        val overlayStandby = overlayState.isScanningPaused || overlayState.isPausedForOwnApp
                         // Live Heartbeat & Screen Stream Panel
                         Surface(
                             shape = RoundedCornerShape(14.dp),
                             color = DexSurfaceElevated,
                             border = BorderStroke(
                                 1.dp,
-                                if (overlayState.isScanningPaused) VoltGold.copy(alpha = 0.5f) else CyberCyan.copy(alpha = 0.5f)
+                                if (overlayStandby) VoltGold.copy(alpha = 0.5f) else CyberCyan.copy(alpha = 0.5f)
                             )
                         ) {
                             Column(
@@ -509,19 +511,19 @@ fun ScannerScreen(
                                         Box(
                                             modifier = Modifier
                                                 .size(9.dp)
-                                                .scale(if (!overlayState.isScanningPaused) pulseScale else 1f)
-                                                .alpha(if (!overlayState.isScanningPaused) pulseAlpha else 1f)
+                                                .scale(if (!overlayStandby) pulseScale else 1f)
+                                                .alpha(if (!overlayStandby) pulseAlpha else 1f)
                                                 .clip(CircleShape)
-                                                .background(if (overlayState.isScanningPaused) VoltGold else EmeraldMatch)
+                                                .background(if (overlayStandby) VoltGold else EmeraldMatch)
                                         )
                                         Text(
-                                            text = if (overlayState.isScanningPaused) {
-                                                "SCANNER PAUSED"
-                                            } else {
-                                                "READING SCREEN • SCAN #${overlayState.framesProcessed}"
+                                            text = when {
+                                                overlayState.isScanningPaused -> "SCANNER PAUSED"
+                                                overlayState.isPausedForOwnApp -> "STANDBY • DATADEX OPEN"
+                                                else -> "READING SCREEN • SCAN #${overlayState.framesProcessed}"
                                             },
                                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = if (overlayState.isScanningPaused) VoltGold else EmeraldMatch
+                                            color = if (overlayStandby) VoltGold else EmeraldMatch
                                         )
                                     }
                                     Text(
@@ -531,7 +533,7 @@ fun ScannerScreen(
                                     )
                                 }
 
-                                if (!overlayState.isScanningPaused) {
+                                if (!overlayStandby) {
                                     val barColor = if (overlayState.isActivelyReading) EmeraldMatch else CyberCyan
                                     Canvas(
                                         modifier = Modifier

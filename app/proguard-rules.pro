@@ -53,8 +53,20 @@
 -keep class com.google.mlkit.common.sdkinternal.MlKitContext { *; }
 -keep class com.google.android.gms.dynamite.descriptors.** { *; }
 -keep class com.google.mlkit.vision.text.bundled.** { *; }
+-keep class com.google.mlkit.vision.text.pipeline.** { *; }
 -keep class com.google.mlkit.vision.vkp.** { *; }
+-keep class com.google.android.libraries.vision.visionkit.pipeline.** { *; }
+-keep class com.google.android.libraries.intelligence.acceleration.** { *; }
+-keep class org.tensorflow.lite.** { *; }
+-keep class com.google.mediapipe.** { *; }
+-keepclassmembers class * extends com.google.android.gms.internal.mlkit_vision_internal_vkp.zzbel {
+    <fields>;
+}
+-keepclassmembers class * extends com.google.android.gms.internal.mlkit_vision_text_bundled_common.zbuf {
+    <fields>;
+}
 -keepclasseswithmembers class * {
     native <methods>;
 }
+
 

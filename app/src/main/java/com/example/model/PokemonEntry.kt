@@ -90,6 +90,7 @@ data class ScanHistoryItem(
 data class OverlayHudState(
     val isOverlayRunning: Boolean = false,
     val isScanningPaused: Boolean = false,
+    val isPausedForOwnApp: Boolean = false,
     val isCollapsed: Boolean = false,
     val showAbilitiesAndNatures: Boolean = false,
     val isTargetContentVisible: Boolean = true,

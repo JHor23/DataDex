@@ -122,6 +122,33 @@ class ScreenOverlayService : Service() {
                 overlayHudWindow?.updateOpacity(prefs.overlayOpacity)
             }
         }
+        serviceScope.launch {
+            var previouslyInForeground = DataDexStateHolder.isAppInForeground.value
+            DataDexStateHolder.isAppInForeground.collect { inForeground ->
+                val state = DataDexStateHolder.overlayState.value
+                if (state.isOverlayRunning && !state.isScanningPaused) {
+                    if (inForeground) {
+                        DataDexStateHolder.recordPausedForOwnApp()
+                    } else if (previouslyInForeground) {
+                        DataDexStateHolder.updateOverlayState {
+                            it.copy(
+                                isPausedForOwnApp = false,
+                                statusMessage = "Overlay active • Watching screen"
+                            )
+                        }
+                        delay(180L)
+                        val latest = DataDexStateHolder.overlayState.value
+                        if (latest.isOverlayRunning &&
+                            !latest.isScanningPaused &&
+                            !DataDexStateHolder.isAppInForeground.value
+                        ) {
+                            scanSingleCycle(forceUsingLastFrame = false)
+                        }
+                    }
+                }
+                previouslyInForeground = inForeground
+            }
+        }
         createNotificationChannel()
     }
 
@@ -284,7 +311,7 @@ class ScreenOverlayService : Service() {
     private fun reconfigureVirtualDisplay() {
         synchronized(captureLock) {
             runCatching {
-                imageReader?.close()
+                val oldReader = imageReader
                 val reader = ImageReader.newInstance(
                     captureWidth,
                     captureHeight,
@@ -294,6 +321,7 @@ class ScreenOverlayService : Service() {
                 imageReader = reader
                 virtualDisplay?.resize(captureWidth, captureHeight, captureDensity)
                 virtualDisplay?.surface = reader.surface
+                runCatching { oldReader?.close() }
             }
         }
     }
@@ -306,10 +334,16 @@ class ScreenOverlayService : Service() {
                 onTogglePause = {
                     val willPause = !DataDexStateHolder.overlayState.value.isScanningPaused
                     if (willPause) soundEngine.resetDetectionLock()
+                    val ownAppOpen = DataDexStateHolder.isAppInForeground.value
                     DataDexStateHolder.updateOverlayState {
                         it.copy(
-                            isScanningPaused = !it.isScanningPaused,
-                            statusMessage = if (!it.isScanningPaused) "Scanner paused" else "Watching screen"
+                            isScanningPaused = willPause,
+                            isPausedForOwnApp = !willPause && ownAppOpen,
+                            statusMessage = when {
+                                willPause -> "Scanner paused"
+                                ownAppOpen -> "DataDex open • Switch to another app to scan"
+                                else -> "Watching screen"
+                            }
                         )
                     }
                     soundEngine.playOverlayUpdated(latestPrefs)
@@ -368,12 +402,18 @@ class ScreenOverlayService : Service() {
         }
         val shown = overlayHudWindow?.show(prefs.overlayOpacity) == true
         if (shown) {
+            val ownAppOpen = DataDexStateHolder.isAppInForeground.value
             DataDexStateHolder.updateOverlayState {
                 it.copy(
                     isOverlayRunning = true,
                     isScanningPaused = false,
+                    isPausedForOwnApp = ownAppOpen,
                     isTargetContentVisible = true,
-                    statusMessage = "Overlay active • Watching screen"
+                    statusMessage = if (ownAppOpen) {
+                        "DataDex open • Switch to another app to scan"
+                    } else {
+                        "Overlay active • Watching screen"
+                    }
                 )
             }
             soundEngine.playOverlayUpdated(prefs)
@@ -381,6 +421,7 @@ class ScreenOverlayService : Service() {
             DataDexStateHolder.updateOverlayState {
                 it.copy(
                     isOverlayRunning = false,
+                    isPausedForOwnApp = false,
                     statusMessage = "Overlay permission required to display HUD"
                 )
             }
@@ -397,7 +438,11 @@ class ScreenOverlayService : Service() {
                 val prefs = latestPrefs
                 val state = DataDexStateHolder.overlayState.value
                 if (!state.isScanningPaused) {
-                    scanSingleCycle(forceUsingLastFrame = false)
+                    if (DataDexStateHolder.isAppInForeground.value) {
+                        DataDexStateHolder.recordPausedForOwnApp()
+                    } else {
+                        scanSingleCycle(forceUsingLastFrame = false)
+                    }
                 }
                 delay(prefs.scanIntervalMs.toLong())
             }
@@ -405,11 +450,21 @@ class ScreenOverlayService : Service() {
     }
 
     private suspend fun scanSingleCycle(forceUsingLastFrame: Boolean) = scanMutex.withLock {
+        if (DataDexStateHolder.isAppInForeground.value) {
+            DataDexStateHolder.recordPausedForOwnApp()
+            return@withLock
+        }
+
         val prefs = latestPrefs
         DataDexStateHolder.setActivelyReading(true)
 
         try {
             val freshBitmap = withContext(Dispatchers.Default) { acquireScreenBitmap() }
+            if (DataDexStateHolder.isAppInForeground.value) {
+                DataDexStateHolder.recordPausedForOwnApp()
+                return@withLock
+            }
+
             val bitmapToAnalyze = if (freshBitmap != null && !freshBitmap.isRecycled) {
                 lastCapturedBitmap = freshBitmap
                 freshBitmap
@@ -440,7 +495,8 @@ class ScreenOverlayService : Service() {
                     bitmap = bitmapToAnalyze,
                     enableVisionFallback = prefs.enableVisionFallback,
                     allowNetworkLookup = prefs.enablePokeApiLiveFetch,
-                    maskNormalizedRect = maskRect
+                    maskNormalizedRect = maskRect,
+                    includeObjectBoxes = false
                 )
             }
             val previousState = DataDexStateHolder.overlayState.value
@@ -487,6 +543,8 @@ class ScreenOverlayService : Service() {
                 visionTags = current.lastVisionTags,
                 statusOverride = "Scanner standby • Retrying"
             )
+        } finally {
+            DataDexStateHolder.setActivelyReading(false)
         }
     }
 
@@ -503,23 +561,47 @@ class ScreenOverlayService : Service() {
                 if (pixelStride <= 0 || image.width <= 0 || image.height <= 0) return null
                 val rowPadding = (rowStride - pixelStride * image.width).coerceAtLeast(0)
                 val bitmapWidth = image.width + rowPadding / pixelStride
-                val rawBitmap = obtainReusableBitmap(
-                    existing = reusableRawBitmap,
-                    width = bitmapWidth,
-                    height = image.height
-                ).also { reusableRawBitmap = it }
-                rawBitmap.copyPixelsFromBuffer(buffer)
-                if (bitmapWidth != image.width) {
+                val expectedPaddedBytes = bitmapWidth * image.height * 4
+                val rowBytes = image.width * pixelStride
+                val minStrideBytes = rowStride * (image.height - 1) + rowBytes
+
+                if (buffer.remaining() >= expectedPaddedBytes) {
+                    val rawBitmap = obtainReusableBitmap(
+                        existing = reusableRawBitmap,
+                        width = bitmapWidth,
+                        height = image.height
+                    ).also { reusableRawBitmap = it }
+                    rawBitmap.copyPixelsFromBuffer(buffer)
+                    if (bitmapWidth != image.width) {
+                        val cropped = obtainReusableBitmap(
+                            existing = reusableCroppedBitmap,
+                            width = image.width,
+                            height = image.height
+                        ).also { reusableCroppedBitmap = it }
+                        val rect = Rect(0, 0, image.width, image.height)
+                        Canvas(cropped).drawBitmap(rawBitmap, rect, rect, null)
+                        cropped
+                    } else {
+                        rawBitmap
+                    }
+                } else if (pixelStride == 4 && buffer.remaining() >= minStrideBytes) {
+                    val compactBuffer = ByteBuffer.allocateDirect(rowBytes * image.height)
+                    val rowArray = ByteArray(rowBytes)
+                    for (row in 0 until image.height) {
+                        buffer.position(row * rowStride)
+                        buffer.get(rowArray, 0, rowBytes)
+                        compactBuffer.put(rowArray, 0, rowBytes)
+                    }
+                    compactBuffer.rewind()
                     val cropped = obtainReusableBitmap(
                         existing = reusableCroppedBitmap,
                         width = image.width,
                         height = image.height
                     ).also { reusableCroppedBitmap = it }
-                    val rect = Rect(0, 0, image.width, image.height)
-                    Canvas(cropped).drawBitmap(rawBitmap, rect, rect, null)
+                    cropped.copyPixelsFromBuffer(compactBuffer)
                     cropped
                 } else {
-                    rawBitmap
+                    null
                 }
             } catch (_: Throwable) {
                 null
@@ -532,6 +614,9 @@ class ScreenOverlayService : Service() {
     private fun obtainReusableBitmap(existing: Bitmap?, width: Int, height: Int): Bitmap {
         if (existing != null && !existing.isRecycled && existing.width == width && existing.height == height) {
             return existing
+        }
+        if (lastCapturedBitmap === existing) {
+            lastCapturedBitmap = null
         }
         existing?.recycle()
         return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -565,6 +650,7 @@ class ScreenOverlayService : Service() {
             it.copy(
                 isOverlayRunning = false,
                 isScanningPaused = false,
+                isPausedForOwnApp = false,
                 isActivelyReading = false,
                 statusMessage = "Overlay stopped"
             )

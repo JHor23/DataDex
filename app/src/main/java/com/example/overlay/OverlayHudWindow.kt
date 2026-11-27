@@ -186,16 +186,18 @@ class OverlayHudWindow(
      */
     fun getNormalizedOverlayRect(screenWidth: Int, screenHeight: Int): RectF? {
         val view = composeView ?: return null
-        if (screenWidth <= 0 || screenHeight <= 0 || view.width <= 0 || view.height <= 0) {
+        if (!view.isAttachedToWindow || screenWidth <= 0 || screenHeight <= 0 || view.width <= 0 || view.height <= 0) {
             return null
         }
-        val location = IntArray(2)
-        view.getLocationOnScreen(location)
-        val left = (location[0].toFloat() / screenWidth).coerceIn(0f, 1f)
-        val top = (location[1].toFloat() / screenHeight).coerceIn(0f, 1f)
-        val right = ((location[0] + view.width).toFloat() / screenWidth).coerceIn(0f, 1f)
-        val bottom = ((location[1] + view.height).toFloat() / screenHeight).coerceIn(0f, 1f)
-        return RectF(left, top, right, bottom)
+        return runCatching {
+            val location = IntArray(2)
+            view.getLocationOnScreen(location)
+            val left = (location[0].toFloat() / screenWidth).coerceIn(0f, 1f)
+            val top = (location[1].toFloat() / screenHeight).coerceIn(0f, 1f)
+            val right = ((location[0] + view.width).toFloat() / screenWidth).coerceIn(0f, 1f)
+            val bottom = ((location[1] + view.height).toFloat() / screenHeight).coerceIn(0f, 1f)
+            RectF(left, top, right, bottom)
+        }.getOrNull()
     }
 
     fun updateOpacity(opacity: Float) {
@@ -229,7 +231,7 @@ private fun FloatingDataDexHud(
 ) {
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(state.isOverlayRunning) {
-        while (true) {
+        while (state.isOverlayRunning) {
             nowMillis = System.currentTimeMillis()
             delay(1000L)
         }
@@ -244,7 +246,7 @@ private fun FloatingDataDexHud(
         }
     }
 
-    val isActivelyScanning = state.isOverlayRunning && !state.isScanningPaused
+    val isActivelyScanning = state.isOverlayRunning && !state.isScanningPaused && !state.isPausedForOwnApp
     var pulseScale = 1f
     var pulseAlpha = 1f
     var radarWave = 0f
@@ -284,7 +286,7 @@ private fun FloatingDataDexHud(
         targetValue = when {
             flashMatchHighlight -> EmeraldMatch
             state.showAbilitiesAndNatures -> VoltGold.copy(alpha = 0.82f)
-            state.isScanningPaused -> VoltGold.copy(alpha = 0.7f)
+            state.isScanningPaused || state.isPausedForOwnApp -> VoltGold.copy(alpha = 0.7f)
             !state.isTargetContentVisible -> ScannerRed.copy(alpha = 0.7f)
             else -> CyberCyan.copy(alpha = 0.78f)
         },
@@ -296,7 +298,7 @@ private fun FloatingDataDexHud(
     val expandedRingStroke = remember { Stroke(width = 1.5f) }
 
     val statusDotColor = when {
-        state.isScanningPaused -> VoltGold
+        state.isScanningPaused || state.isPausedForOwnApp -> VoltGold
         !state.isTargetContentVisible -> ScannerRed
         state.isActivelyReading -> EmeraldMatch
         else -> CyberCyan
@@ -339,7 +341,7 @@ private fun FloatingDataDexHud(
                         modifier = Modifier.size(16.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (!state.isScanningPaused) {
+                        if (isActivelyScanning) {
                             Canvas(modifier = Modifier.size(16.dp)) {
                                 drawCircle(
                                     color = statusDotColor.copy(alpha = (1f - radarWave) * 0.7f),
@@ -351,8 +353,8 @@ private fun FloatingDataDexHud(
                         Box(
                             modifier = Modifier
                                 .size(9.dp)
-                                .scale(if (!state.isScanningPaused) pulseScale else 1f)
-                                .alpha(if (!state.isScanningPaused) pulseAlpha else 1f)
+                                .scale(if (isActivelyScanning) pulseScale else 1f)
+                                .alpha(if (isActivelyScanning) pulseAlpha else 1f)
                                 .clip(CircleShape)
                                 .background(statusDotColor)
                         )
@@ -364,9 +366,13 @@ private fun FloatingDataDexHud(
                             color = TextPrimary
                         )
                         Text(
-                            text = if (state.isScanningPaused) "PAUSED" else "SCAN #${state.framesProcessed}",
+                            text = when {
+                                state.isScanningPaused -> "PAUSED"
+                                state.isPausedForOwnApp -> "STANDBY"
+                                else -> "SCAN #${state.framesProcessed}"
+                            },
                             style = MaterialTheme.typography.labelSmall,
-                            color = CyberCyan
+                            color = if (state.isScanningPaused || state.isPausedForOwnApp) VoltGold else CyberCyan
                         )
                     }
                     IconButton(
@@ -419,7 +425,7 @@ private fun FloatingDataDexHud(
                                 modifier = Modifier.size(15.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (!state.isScanningPaused) {
+                                if (isActivelyScanning) {
                                     Canvas(modifier = Modifier.size(15.dp)) {
                                         drawCircle(
                                             color = statusDotColor.copy(alpha = (1f - radarWave) * 0.7f),
@@ -431,8 +437,8 @@ private fun FloatingDataDexHud(
                                 Box(
                                     modifier = Modifier
                                         .size(8.dp)
-                                        .scale(if (!state.isScanningPaused) pulseScale else 1f)
-                                        .alpha(if (!state.isScanningPaused) pulseAlpha else 1f)
+                                        .scale(if (isActivelyScanning) pulseScale else 1f)
+                                        .alpha(if (isActivelyScanning) pulseAlpha else 1f)
                                         .clip(CircleShape)
                                         .background(statusDotColor)
                                 )
@@ -446,6 +452,7 @@ private fun FloatingDataDexHud(
                             Text(
                                 text = when {
                                     state.isScanningPaused -> "PAUSED"
+                                    state.isPausedForOwnApp -> "DATADEX OPEN"
                                     !state.isTargetContentVisible -> "HIDDEN"
                                     else -> "READING #${state.framesProcessed}"
                                 },
@@ -507,7 +514,7 @@ private fun FloatingDataDexHud(
                     }
 
                     // Continuous visual scan pulse bar while overlay scanning is active
-                    if (!state.isScanningPaused) {
+                    if (isActivelyScanning) {
                         val sweepBarColor = if (state.isActivelyReading) EmeraldMatch else CyberCyan
                         Canvas(
                             modifier = Modifier

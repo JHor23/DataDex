@@ -67,7 +67,17 @@ android {
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   androidResources {
-    noCompress += listOf("tflite", "mobile_ica_8bit_with_metadata_tflite")
+    noCompress += listOf(
+      "tflite",
+      "mobile_ica_8bit_with_metadata_tflite",
+      "pb",
+      "binarypb",
+      "fb",
+      "bincfg",
+      "conv_model",
+      "lstm_model",
+      "mobile_object_localizer_labelmap"
+    )
   }
   dependenciesInfo {
     includeInApk = false

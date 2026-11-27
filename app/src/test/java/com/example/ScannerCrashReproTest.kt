@@ -24,7 +24,9 @@ import com.example.model.RecognitionMethod
 import com.example.model.ScanMatch
 import com.example.overlay.ScreenOverlayService
 import com.example.viewmodel.DataDexViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,12 +53,14 @@ class ScannerCrashReproTest {
 
     @Before
     fun resetState() {
+        DataDexStateHolder.setAppInForeground(false)
         DataDexStateHolder.updateOverlayState { OverlayHudState() }
         ShadowSettings.setCanDrawOverlays(false)
     }
 
     @After
     fun cleanupState() {
+        DataDexStateHolder.setAppInForeground(false)
         DataDexStateHolder.updateOverlayState { OverlayHudState() }
         ShadowSettings.setCanDrawOverlays(false)
     }
@@ -223,7 +227,7 @@ class ScannerCrashReproTest {
     }
 
     @Test
-    fun `ml engine detectors initialize cleanly and match Charmander card OCR`() = runBlocking {
+    fun `ml engine detectors initialize cleanly and match Charmander card OCR`() = runBlocking(Dispatchers.Default) {
         val app = ApplicationProvider.getApplicationContext<Application>()
         DataDexMlEngine.ensureInitialized(app)
         val engine = DataDexMlEngine()
@@ -239,10 +243,94 @@ class ScannerCrashReproTest {
         assertEquals(4, candidate?.pokemonId)
 
         val rgb565 = Bitmap.createBitmap(12, 12, Bitmap.Config.RGB_565)
-        val result = engine.analyzeBitmap(rgb565)
+        val result = withTimeout(5000L) {
+            engine.analyzeBitmap(rgb565)
+        }
         assertNotNull(result)
         assertTrue(result.visionLabels.isEmpty() || result.visionLabels.isNotEmpty())
         rgb565.recycle()
         engine.close()
+    }
+
+    @Test
+    fun `overlay skips scanning while DataDex is open and resumes when backgrounded`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        ShadowSettings.setCanDrawOverlays(true)
+
+        DataDexStateHolder.setAppInForeground(true)
+        val serviceController = Robolectric.buildService(ScreenOverlayService::class.java)
+        val service = serviceController.create().get()
+        service.onStartCommand(
+            Intent(service, ScreenOverlayService::class.java).apply {
+                action = ScreenOverlayService.ACTION_START_OVERLAY_ONLY
+            },
+            0,
+            10
+        )
+        composeTestRule.waitForIdle()
+
+        assertTrue(DataDexStateHolder.overlayState.value.isOverlayRunning)
+        assertTrue(DataDexStateHolder.overlayState.value.isPausedForOwnApp)
+
+        val framesBefore = DataDexStateHolder.overlayState.value.framesProcessed
+        service.onStartCommand(ScreenOverlayService.scanNowIntent(service), 0, 11)
+        composeTestRule.waitForIdle()
+
+        val stateWhileOpen = DataDexStateHolder.overlayState.value
+        assertEquals(framesBefore, stateWhileOpen.framesProcessed)
+        assertTrue(stateWhileOpen.isPausedForOwnApp)
+        assertTrue(stateWhileOpen.statusMessage.contains("DataDex open"))
+
+        DataDexStateHolder.setAppInForeground(false)
+        DataDexStateHolder.recordFrameTelemetry(textPreview = "Pikachu", visionTags = emptyList())
+        assertFalse(DataDexStateHolder.overlayState.value.isPausedForOwnApp)
+
+        serviceController.destroy()
+    }
+
+    @Test
+    fun `launching overlay minimizes DataDex to Android Home screen once active`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        ShadowSettings.setCanDrawOverlays(true)
+
+        // Cycle CREATED -> RESUMED so MainActivity.onStop/onStart run and ON_RESUME refreshes hasOverlayPermission
+        composeTestRule.activityRule.scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED)
+        assertFalse(DataDexStateHolder.isAppInForeground.value)
+        composeTestRule.activityRule.scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+        composeTestRule.waitForIdle()
+
+        assertTrue(DataDexStateHolder.isAppInForeground.value)
+
+        composeTestRule.onNodeWithTag("launch_screen_overlay_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+
+        val activity = composeTestRule.activity
+        val shadowActivity = Shadows.shadowOf(activity)
+        val startedForResult = shadowActivity.nextStartedActivityForResult
+        assertNotNull(startedForResult)
+
+        shadowActivity.receiveResult(
+            startedForResult.intent,
+            Activity.RESULT_OK,
+            Intent().putExtra("mock_projection", true)
+        )
+        composeTestRule.waitForIdle()
+
+        val startedService = Shadows.shadowOf(app).nextStartedService
+        assertNotNull(startedService)
+        assertEquals(ScreenOverlayService::class.java.name, startedService.component?.className)
+
+        // Simulate ScreenOverlayService completing startup
+        DataDexStateHolder.updateOverlayState { it.copy(isOverlayRunning = true) }
+        composeTestRule.waitForIdle()
+        Thread.sleep(100)
+        composeTestRule.waitForIdle()
+
+        val homeIntent = shadowActivity.nextStartedActivity ?: Shadows.shadowOf(app).nextStartedActivity
+        assertNotNull(homeIntent)
+        assertEquals(Intent.ACTION_MAIN, homeIntent!!.action)
+        assertTrue(homeIntent.hasCategory(Intent.CATEGORY_HOME))
     }
 }

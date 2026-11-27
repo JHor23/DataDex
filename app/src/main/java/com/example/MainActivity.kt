@@ -117,8 +117,11 @@ import com.example.ui.theme.ScannerRed
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.data.DataDexStateHolder
 import com.example.viewmodel.DataDexViewModel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 
 @Serializable object ScannerRoute
@@ -165,6 +168,16 @@ class MainActivity : ComponentActivity() {
                 DataDexRootApp()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        DataDexStateHolder.onAppActivityStarted()
+    }
+
+    override fun onStop() {
+        DataDexStateHolder.onAppActivityStopped()
+        super.onStop()
     }
 }
 
@@ -223,13 +236,27 @@ fun DataDexRootApp(
                 ContextCompat.startForegroundService(context, serviceIntent)
             }.isSuccess
             scope.launch {
-                snackbarHostState.showSnackbar(
-                    if (launched) {
-                        "DataDex Screen Overlay launched!"
+                if (launched) {
+                    val overlayActive = withTimeoutOrNull(1200L) {
+                        DataDexStateHolder.overlayState.first { it.isOverlayRunning }
+                    } != null
+                    if (overlayActive) {
+                        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_HOME)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        val minimized = runCatching {
+                            context.startActivity(homeIntent)
+                        }.isSuccess
+                        if (!minimized) {
+                            snackbarHostState.showSnackbar("DataDex Screen Overlay launched!")
+                        }
                     } else {
-                        "Unable to start Screen Overlay service on this device."
+                        snackbarHostState.showSnackbar("Unable to display Screen Overlay on this device.")
                     }
-                )
+                } else {
+                    snackbarHostState.showSnackbar("Unable to start Screen Overlay service on this device.")
+                }
             }
         } else {
             scope.launch {

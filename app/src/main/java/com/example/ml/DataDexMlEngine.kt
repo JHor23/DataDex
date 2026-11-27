@@ -30,7 +30,9 @@ import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -137,7 +139,8 @@ class DataDexMlEngine(
         bitmap: Bitmap,
         enableVisionFallback: Boolean = true,
         allowNetworkLookup: Boolean = true,
-        maskNormalizedRect: RectF? = null
+        maskNormalizedRect: RectF? = null,
+        includeObjectBoxes: Boolean = false
     ): MlFrameAnalysis {
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
             return EMPTY_ANALYSIS
@@ -151,10 +154,22 @@ class DataDexMlEngine(
             val width = normalizedBitmap.width.coerceAtLeast(1).toFloat()
             val height = normalizedBitmap.height.coerceAtLeast(1).toFloat()
 
-            val visionText = runCatching { textRecognizer.process(image).awaitResult() }
-                .onSuccess { lastErrorMessage = null }
+            var ocrUnavailable = false
+            val visionText = runCatching {
+                withTimeoutOrNull(ML_TASK_TIMEOUT_MS) {
+                    textRecognizer.process(image).awaitResult()
+                }
+            }
+                .onSuccess {
+                    if (it != null) {
+                        lastErrorMessage = null
+                    } else {
+                        ocrUnavailable = true
+                    }
+                }
                 .onFailure {
                     if (it is CancellationException) throw it
+                    ocrUnavailable = true
                     lastErrorMessage = it.localizedMessage ?: it.javaClass.simpleName
                 }
                 .getOrNull()
@@ -166,13 +181,25 @@ class DataDexMlEngine(
 
             val imageLabels: List<ImageLabel>
             val detectedObjects: List<DetectedObject>
-            if (ocrCandidates.isEmpty() && enableVisionFallback) {
-                imageLabels = runCatching { imageLabeler.process(image).awaitResult() }
+            if (!ocrUnavailable && ocrCandidates.isEmpty() && enableVisionFallback) {
+                imageLabels = runCatching {
+                    withTimeoutOrNull(ML_TASK_TIMEOUT_MS) {
+                        imageLabeler.process(image).awaitResult()
+                    } ?: emptyList()
+                }
                     .onFailure { if (it is CancellationException) throw it }
                     .getOrElse { emptyList() }
-                detectedObjects = runCatching { objectDetector.process(image).awaitResult() }
-                    .onFailure { if (it is CancellationException) throw it }
-                    .getOrElse { emptyList() }
+                detectedObjects = if (includeObjectBoxes) {
+                    runCatching {
+                        withTimeoutOrNull(ML_TASK_TIMEOUT_MS) {
+                            objectDetector.process(image).awaitResult()
+                        } ?: emptyList()
+                    }
+                        .onFailure { if (it is CancellationException) throw it }
+                        .getOrElse { emptyList() }
+                } else {
+                    emptyList()
+                }
             } else {
                 imageLabels = emptyList()
                 detectedObjects = emptyList()
@@ -247,7 +274,7 @@ class DataDexMlEngine(
                 }
             }
 
-            if (needsMask && maskNormalizedRect != null) {
+            if (needsMask) {
                 val w = source.width.toFloat()
                 val h = source.height.toFloat()
                 canvas.drawRect(
@@ -306,7 +333,7 @@ class DataDexMlEngine(
                             (rect.right / frameWidth).coerceIn(0f, 1f),
                             (rect.bottom / frameHeight).coerceIn(0f, 1f)
                         ),
-                        label = if (isMatch) "Found: ${ocrCandidate?.matchedToken}" else block.text.take(18),
+                        label = if (isMatch) "Found: ${ocrCandidate.matchedToken}" else block.text.take(18),
                         isPokemonMatch = isMatch
                     )
                 )
@@ -391,6 +418,7 @@ class DataDexMlEngine(
 
     companion object {
         private const val MIN_MLKIT_DIMENSION = 32
+        private const val ML_TASK_TIMEOUT_MS = 2500L
         private val EMPTY_ANALYSIS = MlFrameAnalysis(
             match = null,
             secondaryMatches = emptyList(),
@@ -426,10 +454,14 @@ class DataDexMlEngine(
 }
 
 private suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { cont ->
-    addOnSuccessListener { result ->
+    val direct = Executor { command -> command.run() }
+    addOnSuccessListener(direct) { result ->
         if (cont.isActive) cont.resume(result)
     }
-    addOnFailureListener { exception ->
+    addOnFailureListener(direct) { exception ->
         if (cont.isActive) cont.resumeWithException(exception)
+    }
+    addOnCanceledListener(direct) {
+        cont.cancel()
     }
 }
